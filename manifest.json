@@ -1,11 +1,11 @@
 {
-  "name": "Sofa Cover Ops - Shree Gayatri",
-  "short_name": "SofaOps",
-  "description": "Made-to-Order Sofa Cover Workflow - Shree Gayatri Furnishing Hub",
+  "name": "Shree Gayatri Handloom House - Sofa Cover Dept",
+  "short_name": "SG Sofa ERP",
+  "description": "Made-to-Order Sofa Cover ERP - Shree Gayatri Handloom House",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#0f172a",
-  "theme_color": "#0f172a",
+  "background_color": "#111827",
+  "theme_color": "#111827",
   "icons": [
     {
       "src": "./icon-192.png",

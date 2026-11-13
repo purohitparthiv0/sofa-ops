@@ -120,35 +120,91 @@
       return Math.max(0, (Date.now() - new Date(refTime).getTime()) / 3600000);
     }
 
-    // Core Business Math (Untouched: round up to .25 ft, no discount)
-    function sumSegments(segmentStr) {
-      if (!segmentStr) return 0;
-      return String(segmentStr)
+    // Core Business Math (Pure Integer Math — zero floating-point drift, never NaN)
+    function parseSegmentsList(input) {
+      if (!input) return [];
+      const raw = Array.isArray(input) ? input.join('+') : String(input);
+      return raw
         .split(/[+,\s]+/)
-        .map((n) => parseFloat(n.trim()))
-        .filter((n) => !isNaN(n) && n > 0)
-        .reduce((acc, val) => acc + val, 0);
+        .map((s) => parseInt(s.trim(), 10))
+        .filter((n) => Number.isInteger(n) && n > 0);
     }
 
-    function inchesToBillableFeet(totalInches) {
-      if (!totalInches || totalInches <= 0) return 0;
-      return Math.ceil((totalInches / 12) * 4) / 4;
+    function toInt(val) {
+      const n = parseInt(String(val ?? '').replace(/[^0-9-]/g, ''), 10);
+      return Number.isInteger(n) ? n : 0;
     }
 
-    function calculateEstimate({ seatingSegments, seatingRate, backUnit, backSegments, backRate, advanceAmount, visitCharge = 0 }) {
-      const seatingInches = sumSegments(seatingSegments);
-      const seatingFeet = inchesToBillableFeet(seatingInches);
-      const seatingAmount = seatingFeet * (parseFloat(seatingRate) || 0);
+    function calcEstimate(form = {}) {
+      const seatingList = parseSegmentsList(form.seating_segments ?? form.seatingSegments);
+      const seatingInches = seatingList.reduce((acc, n) => acc + n, 0);
+      const seatingQuarters = seatingInches > 0 ? Math.ceil(seatingInches / 3) : 0;
+      const seatingFeet = seatingQuarters / 4;
+      const seatingFeetStr = seatingFeet.toFixed(2);
+      const seatingRateInt = Math.max(0, toInt(form.seating_rate ?? form.seatingRate));
+      const seatingAmount = Math.round((seatingQuarters * seatingRateInt) / 4);
 
-      const backRaw = sumSegments(backSegments);
-      const backBillable = backUnit === 'Inches' ? inchesToBillableFeet(backRaw) : backRaw;
-      const backAmount = backBillable * (parseFloat(backRate) || 0);
+      const backUnit = (form.back_unit ?? form.backUnit) === 'Pcs' ? 'Pcs' : 'Inches';
+      const backList = parseSegmentsList(form.back_segments ?? form.backSegments);
+      const backRaw = backList.reduce((acc, n) => acc + n, 0);
+      const backRateInt = Math.max(0, toInt(form.back_rate ?? form.backRate));
 
-      const total = Math.round(seatingAmount + backAmount + (parseFloat(visitCharge) || 0));
-      const balance = total - (parseFloat(advanceAmount) || 0);
+      let backQuarters = 0;
+      let backBillable = 0;
+      let backBillableStr = '0';
+      let backAmount = 0;
 
-      return { seatingInches, seatingFeet, seatingAmount, backRaw, backBillable, backAmount, total, balance };
+      if (backUnit === 'Inches') {
+        backQuarters = backRaw > 0 ? Math.ceil(backRaw / 3) : 0;
+        backBillable = backQuarters / 4;
+        backBillableStr = backBillable.toFixed(2);
+        backAmount = Math.round((backQuarters * backRateInt) / 4);
+      } else {
+        backBillable = backRaw;
+        backBillableStr = String(backRaw);
+        backAmount = backRaw * backRateInt;
+      }
+
+      const visitChargeInt = Math.max(0, toInt(form.visit_charge ?? form.visitCharge));
+      const advanceInt = Math.max(0, toInt(form.advance_amount ?? form.advanceAmount));
+      const total = seatingAmount + backAmount + visitChargeInt;
+      const balance = total - advanceInt;
+
+      const seatingExpr = seatingList.length ? seatingList.join(' + ') : '0';
+      const backExpr = backList.length ? backList.join(' + ') : '0';
+
+      const seatingLine = `Seating: ${seatingExpr} = ${seatingInches} in = ${seatingFeetStr} ft × Rs ${seatingRateInt.toLocaleString('en-IN')} = Rs ${seatingAmount.toLocaleString('en-IN')}`;
+      const backLine = backUnit === 'Inches'
+        ? `Back: ${backExpr} = ${backRaw} in = ${backBillableStr} ft × Rs ${backRateInt.toLocaleString('en-IN')} = Rs ${backAmount.toLocaleString('en-IN')}`
+        : `Back: ${backExpr} = ${backRaw} pcs × Rs ${backRateInt.toLocaleString('en-IN')} = Rs ${backAmount.toLocaleString('en-IN')}`;
+      const summaryLine = `Estimate total: Rs ${total.toLocaleString('en-IN')} | Advance: Rs ${advanceInt.toLocaleString('en-IN')} | Balance: Rs ${balance.toLocaleString('en-IN')}`;
+
+      return {
+        seatingList,
+        seatingInches,
+        seatingQuarters,
+        seatingFeet,
+        seatingFeetStr,
+        seatingRateInt,
+        seatingAmount,
+        backUnit,
+        backList,
+        backRaw,
+        backQuarters,
+        backBillable,
+        backBillableStr,
+        backRateInt,
+        backAmount,
+        visitChargeInt,
+        advanceInt,
+        total,
+        balance,
+        seatingLine,
+        backLine,
+        summaryLine
+      };
     }
+    const calculateEstimate = calcEstimate;
 
     const WhatsAppService = {
       formatPhone(mobile) {
@@ -590,7 +646,7 @@
         }
       };
 
-      const calc = calculateEstimate(form);
+      const calc = calcEstimate(form);
 
       const validateAndOpenReview = () => {
         setErrorMsg('');
@@ -855,30 +911,44 @@
                 {/* Seating */}
                 <div className="bg-gray-50 border border-gray-200 rounded p-3 space-y-2">
                   <div className="flex justify-between items-center">
-                    <span className="text-xs font-bold text-gray-800">SEATING SEGMENTS (Inches)</span>
-                    <span className="text-xs font-bold text-amber-800 tabular-nums">
-                      Total: {calc.seatingInches}" → Billable: {calc.seatingFeet} ft (rounded up to 0.25 ft)
-                    </span>
+                    <span className="text-xs font-bold text-gray-800">SEATING SEGMENTS (Always Inches)</span>
+                    <button
+                      type="button"
+                      disabled={!canEditSpecs}
+                      onClick={() => setForm((f) => ({ ...f, seating_segments: f.seating_segments ? String(f.seating_segments).replace(/\+*$/, '') + '+' : '' }))}
+                      className="text-xs font-semibold px-2 py-0.5 bg-white border border-gray-300 rounded hover:bg-gray-100"
+                    >
+                      + Add segment
+                    </button>
                   </div>
                   <div className="grid grid-cols-3 gap-3">
-                    <input
-                      name="seating_segments"
-                      disabled={!canEditSpecs}
-                      placeholder="81+96+103+58 (Press Enter for +)"
-                      className="col-span-2 border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
-                      value={form.seating_segments}
-                      onChange={(e) => setForm({ ...form, seating_segments: e.target.value })}
-                      onKeyDown={(e) => handleFieldKeyDown(e, true)}
-                    />
-                    <input
-                      disabled={!canEditSpecs}
-                      type="number"
-                      placeholder="Rate / ft (₹)"
-                      className="border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
-                      value={form.seating_rate}
-                      onChange={(e) => setForm({ ...form, seating_rate: e.target.value })}
-                      onKeyDown={(e) => handleFieldKeyDown(e)}
-                    />
+                    <div className="col-span-2">
+                      <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">Segments in Inches (e.g. 88+99+66)</label>
+                      <input
+                        name="seating_segments"
+                        disabled={!canEditSpecs}
+                        placeholder="88+99+66"
+                        className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
+                        value={form.seating_segments}
+                        onChange={(e) => setForm((f) => ({ ...f, seating_segments: e.target.value }))}
+                        onKeyDown={(e) => handleFieldKeyDown(e, true)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">Rate per ft (₹)</label>
+                      <input
+                        disabled={!canEditSpecs}
+                        type="number"
+                        placeholder="200"
+                        className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
+                        value={form.seating_rate}
+                        onChange={(e) => setForm((f) => ({ ...f, seating_rate: e.target.value }))}
+                        onKeyDown={(e) => handleFieldKeyDown(e)}
+                      />
+                    </div>
+                  </div>
+                  <div className="text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 tabular-nums">
+                    {calc.seatingLine}
                   </div>
                 </div>
 
@@ -891,35 +961,56 @@
                         disabled={!canEditSpecs}
                         className="border border-gray-300 rounded px-2 py-0.5 text-xs font-semibold bg-white"
                         value={form.back_unit}
-                        onChange={(e) => setForm({ ...form, back_unit: e.target.value })}
+                        onChange={(e) => setForm((f) => ({ ...f, back_unit: e.target.value }))}
                       >
-                        <option value="Inches">Inches (auto-convert to ft)</option>
-                        <option value="Pcs">Pcs (direct count)</option>
+                        <option value="Inches">Inches</option>
+                        <option value="Pcs">Pcs</option>
                       </select>
                     </div>
-                    <span className="text-xs font-bold text-amber-800 tabular-nums">
-                      Total: {calc.backRaw} → Billable: {calc.backBillable} {form.back_unit === 'Inches' ? 'ft' : 'pcs'}
-                    </span>
+                    <button
+                      type="button"
+                      disabled={!canEditSpecs}
+                      onClick={() => setForm((f) => ({ ...f, back_segments: f.back_segments ? String(f.back_segments).replace(/\+*$/, '') + '+' : '' }))}
+                      className="text-xs font-semibold px-2 py-0.5 bg-white border border-gray-300 rounded hover:bg-gray-100"
+                    >
+                      + Add segment
+                    </button>
                   </div>
                   <div className="grid grid-cols-3 gap-3">
-                    <input
-                      name="back_segments"
-                      disabled={!canEditSpecs}
-                      placeholder={form.back_unit === 'Inches' ? '80+80+70 (Press Enter for +)' : '2+2+3+5 (Press Enter for +)'}
-                      className="col-span-2 border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
-                      value={form.back_segments}
-                      onChange={(e) => setForm({ ...form, back_segments: e.target.value })}
-                      onKeyDown={(e) => handleFieldKeyDown(e, true)}
-                    />
-                    <input
-                      disabled={!canEditSpecs}
-                      type="number"
-                      placeholder={form.back_unit === 'Inches' ? 'Rate / ft (₹)' : 'Rate / pc (₹)'}
-                      className="border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
-                      value={form.back_rate}
-                      onChange={(e) => setForm({ ...form, back_rate: e.target.value })}
-                      onKeyDown={(e) => handleFieldKeyDown(e)}
-                    />
+                    <div className="col-span-2">
+                      <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">
+                        {form.back_unit === 'Inches' ? 'Segments in Inches (e.g. 80+90+60)' : 'Segments in Pcs (e.g. 2+2+3+5)'}
+                      </label>
+                      <input
+                        name="back_segments"
+                        disabled={!canEditSpecs}
+                        placeholder={form.back_unit === 'Inches' ? '80+90+60' : '2+2+3+5'}
+                        className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
+                        value={form.back_segments}
+                        onChange={(e) => setForm((f) => ({ ...f, back_segments: e.target.value }))}
+                        onKeyDown={(e) => handleFieldKeyDown(e, true)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">
+                        {form.back_unit === 'Inches' ? 'Rate per ft (₹)' : 'Rate per pc (₹)'}
+                      </label>
+                      <input
+                        disabled={!canEditSpecs}
+                        type="number"
+                        placeholder="200"
+                        className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
+                        value={form.back_rate}
+                        onChange={(e) => setForm((f) => ({ ...f, back_rate: e.target.value }))}
+                        onKeyDown={(e) => handleFieldKeyDown(e)}
+                      />
+                    </div>
+                  </div>
+                  <div className="text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 tabular-nums">
+                    {calc.backLine}
+                  </div>
+                  <div className="text-xs font-bold text-gray-900 bg-white border border-gray-300 rounded px-2.5 py-1.5 tabular-nums">
+                    {calc.summaryLine}
                   </div>
                 </div>
 
@@ -947,11 +1038,11 @@
                 <table className="w-full text-sm tabular-nums">
                   <tbody className="divide-y divide-gray-200">
                     <tr>
-                      <td className="py-2 text-gray-600">Seating ({calc.seatingFeet} ft × {formatINR(form.seating_rate || 0)})</td>
+                      <td className="py-2 text-gray-600">Seating ({calc.seatingFeetStr} ft × {formatINR(calc.seatingRateInt)})</td>
                       <td className="py-2 text-right font-semibold text-gray-900">{formatINR(calc.seatingAmount)}</td>
                     </tr>
                     <tr>
-                      <td className="py-2 text-gray-600">Back ({calc.backBillable} {form.back_unit === 'Inches' ? 'ft' : 'pcs'} × {formatINR(form.back_rate || 0)})</td>
+                      <td className="py-2 text-gray-600">Back ({calc.backBillableStr} {form.back_unit === 'Inches' ? 'ft' : 'pcs'} × {formatINR(calc.backRateInt)})</td>
                       <td className="py-2 text-right font-semibold text-gray-900">{formatINR(calc.backAmount)}</td>
                     </tr>
                     {Number(form.visit_charge) > 0 && (

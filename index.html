@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="SofaOps" />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="apple-touch-icon" href="./icon-192.png" />
+  <title>Sofa Cover Ops - Shree Gayatri Furnishing Hub</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    body, #root { margin: 0; padding: 0; background: #f1f5f9; color: #0f172a; font-family: system-ui, -apple-system, sans-serif; }
+    @media print {
+      body * { visibility: hidden; }
+      #printable-sticker, #printable-sticker * { visibility: visible; }
+      #printable-sticker { position: fixed; left: 0; top: 0; margin: 0 !important; padding: 2mm !important; box-shadow: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
+      });
+    }
+  </script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+    const { createClient } = window.supabase;
+
+    const DEFAULT_SUPABASE_URL = 'https://qsyubbefhttdfiglbtbt.supabase.co';
+
+    // Auto-capture setup_key from URL so staff phones don't even have to paste the key!
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlSetupKey = urlParams.get('setup_key');
+    if (urlSetupKey && urlSetupKey.length > 15) {
+      localStorage.setItem('sg_supabase_key', urlSetupKey.trim());
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    function getDeviceFingerprint() {
+      let fp = localStorage.getItem('sg_device_fp');
+      if (!fp) {
+        fp = 'DEV-' + Math.random().toString(36).substring(2, 10).toUpperCase();
+        localStorage.setItem('sg_device_fp', fp);
+      }
+      return fp;
+    }
+
+    function sumSegments(segmentStr) {
+      if (!segmentStr) return 0;
+      return String(segmentStr)
+        .split(/[+,\s]+/)
+        .map((n) => parseFloat(n.trim()))
+        .filter((n) => !isNaN(n) && n > 0)
+        .reduce((acc, val) => acc + val, 0);
+    }
+
+    function inchesToBillableFeet(totalInches) {
+      if (!totalInches || totalInches <= 0) return 0;
+      return Math.ceil((totalInches / 12) * 4) / 4;
+    }
+
+    function calculateEstimate({ seatingSegments, seatingRate, backUnit, backSegments, backRate, advanceAmount, visitCharge = 0 }) {
+      const seatingInches = sumSegments(seatingSegments);
+      const seatingFeet = inchesToBillableFeet(seatingInches);
+      const seatingAmount = seatingFeet * (parseFloat(seatingRate) || 0);
+
+      const backRaw = sumSegments(backSegments);
+      const backBillable = backUnit === 'Inches' ? inchesToBillableFeet(backRaw) : backRaw;
+      const backAmount = backBillable * (parseFloat(backRate) || 0);
+
+      const total = Math.round(seatingAmount + backAmount + (parseFloat(visitCharge) || 0));
+      const balance = total - (parseFloat(advanceAmount) || 0);
+
+      return { seatingInches, seatingFeet, seatingAmount, backRaw, backBillable, backAmount, total, balance };
+    }
+
+    const WhatsAppService = {
+      formatPhone(mobile) {
+        const digits = String(mobile || '').replace(/\D/g, '');
+        return digits.length === 10 ? `91${digits}` : digits;
+      },
+      getLink(type, order) {
+        const phone = this.formatPhone(order.mobile);
+        let msg = '';
+        if (type === 'receipt') {
+          msg = `Namaste ${order.customer_name} ji! Aapka custom Sofa Cover order confirm ho gaya hai.\n\nOrder No: *${order.order_no}*\nDesign: ${order.design_name}\nTotal Estimate: ₹${order.estimate_total}\nAdvance Paid: ₹${order.advance_amount}\nBalance Due: *₹${order.balance_amount}*\nDelivery Date: ${order.promised_date}\n\n- Shree Gayatri Furnishing Hub (Fixed Rate Shop)`;
+        } else if (type === 'ready') {
+          msg = `Namaste ${order.customer_name} ji! Aapka Sofa Cover (Order *${order.order_no}* - ${order.design_name}) bankar *READY* hai.\nBalance Amount: ₹${order.balance_amount}.\nAap shop se collect kar sakte hain. Dhanyavaad!`;
+        } else {
+          msg = `Thank you ${order.customer_name} ji! Order *${order.order_no}* deliver ho chuka hai. Umeed hai aapko fitting aur design pasand aaya hoga. Fir se padhariye!\n- Shree Gayatri Furnishing Hub`;
+        }
+        return `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
+      }
+    };
+
+    function StickerModal({ order, settings, onClose }) {
+      const w = settings?.sticker_width_mm || 60;
+      const h = settings?.sticker_height_mm || 40;
+      const qrUrl = `${window.location.origin}${window.location.pathname}?scan=${order.order_no}`;
+      const qrImgSrc = `https://api.qrserver.com/v1/create-qr-code/?size=140x140&margin=0&data=${encodeURIComponent(qrUrl)}`;
+
+      const handlePrint = () => {
+        const style = document.createElement('style');
+        style.innerHTML = `@page { size: ${w}mm ${h}mm; margin: 0; }`;
+        document.head.appendChild(style);
+        window.print();
+        document.head.removeChild(style);
+      };
+
+      const handleCopyCSV = () => {
+        const csv = `OrderNo,Design,Seating,Back,TotalPcs,Notes,PromisedDate\n"${order.order_no}","${order.design_name}","${order.seating_segments} (${order.seating_feet}ft)","${order.back_segments} (${order.back_billable_qty} ${order.back_unit})","${order.total_pcs}","${(order.tailor_notes || '').replace(/"/g, '""')}","${order.promised_date}"`;
+        navigator.clipboard.writeText(csv);
+        alert('Sticker CSV copied!');
+      };
+
+      return (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-md w-full p-5 shadow-2xl">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-bold text-lg">Cutting Sticker ({w}×{h} mm)</h3>
+              <button onClick={onClose} className="px-2.5 py-1 bg-slate-100 rounded font-bold">✕</button>
+            </div>
+            <div className="flex justify-center bg-slate-100 p-6 rounded-lg mb-4 overflow-auto">
+              <div id="printable-sticker" style={{ width: `${w}mm`, height: `${h}mm` }} className="bg-white border border-black p-1.5 flex flex-col justify-between text-black leading-tight overflow-hidden">
+                <div className="flex justify-between items-start border-b border-black pb-0.5">
+                  <div>
+                    <div className="font-black text-sm tracking-tight">{order.order_no}</div>
+                    <div className="text-[9px] font-bold truncate max-w-[34mm]">{order.design_name}</div>
+                  </div>
+                  <img src={qrImgSrc} alt="QR" className="w-[9mm] h-[9mm]" />
+                </div>
+                <div className="text-[8.5px] space-y-0.5 my-0.5">
+                  <div><strong>S:</strong> {order.seating_segments} = <b>{order.seating_feet}ft</b></div>
+                  <div><strong>B:</strong> {order.back_segments} = <b>{order.back_billable_qty}{order.back_unit === 'Inches' ? 'ft' : 'pcs'}</b> ({order.total_pcs} pcs)</div>
+                  {order.tailor_notes && <div className="truncate italic border-t border-dashed border-gray-400 pt-0.5">Note: {order.tailor_notes}</div>}
+                </div>
+                <div className="text-[8px] font-bold border-t border-black pt-0.5 flex justify-between">
+                  <span>DEL: {order.promised_date}</span>
+                  <span>PCS: {order.total_pcs}</span>
+                </div>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-2">
+              <button onClick={handlePrint} className="bg-slate-900 text-white py-3 rounded-lg font-bold">🖨️ Print / Save PDF Sticker</button>
+              <button onClick={handleCopyCSV} className="border border-slate-300 py-2.5 rounded-lg font-semibold text-sm">📋 Copy Data (CSV)</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function OrderFormModal({ supabase, existingOrder, salesmen, profile, onClose, onSaved }) {
+      const isConfirmed = existingOrder && !['Measurement Pending', 'Estimate Given'].includes(existingOrder.status);
+      const canEditSpecs = !isConfirmed || profile.role === 'admin';
+
+      const [form, setForm] = useState({
+        customer_name: existingOrder?.customer_name || '',
+        mobile: existingOrder?.mobile || '',
+        address: existingOrder?.address || '',
+        home_delivery: existingOrder?.home_delivery || false,
+        measurement_source: existingOrder?.measurement_source || 'Customer brought',
+        visit_staff_name: existingOrder?.visit_staff_name || '',
+        visit_charge: existingOrder?.visit_charge || 0,
+        design_name: existingOrder?.design_name || '',
+        seating_segments: existingOrder?.seating_segments || '',
+        seating_rate: existingOrder?.seating_rate || '',
+        back_unit: existingOrder?.back_unit || 'Inches',
+        back_segments: existingOrder?.back_segments || '',
+        back_rate: existingOrder?.back_rate || '',
+        tailor_notes: existingOrder?.tailor_notes || '',
+        total_pcs: existingOrder?.total_pcs || '',
+        advance_amount: existingOrder?.advance_amount || 0,
+        payment_mode: existingOrder?.payment_mode || 'Cash',
+        salesman_id: existingOrder?.salesman_id || '',
+        promised_date: existingOrder?.promised_date || ''
+      });
+
+      const [saving, setSaving] = useState(false);
+      const calc = calculateEstimate(form);
+
+      const handleSave = async (targetStatus) => {
+        if (!form.customer_name || !form.mobile || !form.design_name) {
+          return alert('Customer Name, Mobile, aur Design bharna zaroori hai.');
+        }
+        if (targetStatus === 'Confirmed') {
+          if (!form.seating_segments || !form.salesman_id || !form.promised_date || !form.total_pcs) {
+            return alert('Order Confirm karne ke liye Measurements, Salesman, Promised Date aur Total Pcs compulsory hain!');
+          }
+        }
+        setSaving(true);
+        const nextStatus = targetStatus === 'Confirmed' ? 'Cutting Pending' : targetStatus;
+        const payload = {
+          ...form,
+          seating_total_inches: calc.seatingInches,
+          seating_feet: calc.seatingFeet,
+          back_total_raw: calc.backRaw,
+          back_billable_qty: calc.backBillable,
+          estimate_total: calc.total,
+          total_pcs: parseInt(form.total_pcs) || 1,
+          visit_charge: parseFloat(form.visit_charge) || 0,
+          seating_rate: parseFloat(form.seating_rate) || 0,
+          back_rate: parseFloat(form.back_rate) || 0,
+          advance_amount: parseFloat(form.advance_amount) || 0,
+          salesman_id: form.salesman_id || null,
+          promised_date: form.promised_date || null,
+          status: nextStatus,
+          ...(targetStatus === 'Confirmed' && !existingOrder?.confirmed_at ? { confirmed_at: new Date().toISOString() } : {})
+        };
+
+        try {
+          let savedOrder;
+          if (existingOrder) {
+            const { data, error } = await supabase.from('orders').update(payload).eq('id', existingOrder.id).select().single();
+            if (error) throw error;
+            savedOrder = data;
+            await supabase.from('activity_logs').insert({
+              order_id: existingOrder.id,
+              action: `Order updated -> ${nextStatus}`,
+              old_value: existingOrder.status,
+              new_value: nextStatus,
+              performed_by: profile.id,
+              performed_by_role: profile.role
+            });
+          } else {
+            const { data, error } = await supabase.from('orders').insert({ ...payload, created_by: profile.id }).select().single();
+            if (error) throw error;
+            savedOrder = data;
+            await supabase.from('activity_logs').insert({
+              order_id: savedOrder.id,
+              action: `Created as ${nextStatus}`,
+              new_value: nextStatus,
+              performed_by: profile.id,
+              performed_by_role: profile.role
+            });
+          }
+          onSaved(savedOrder, targetStatus === 'Confirmed');
+        } catch (err) {
+          alert(err.message);
+        } finally {
+          setSaving(false);
+        }
+      };
+
+      return (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-40 p-2 md:p-4 overflow-y-auto">
+          <div className="bg-white rounded-xl max-w-4xl w-full p-4 md:p-6 shadow-2xl my-auto max-h-[95vh] overflow-y-auto">
+            <div className="flex justify-between items-center border-b pb-3 mb-4">
+              <h2 className="text-xl font-bold">{existingOrder ? `Order ${existingOrder.order_no}` : 'New Sofa Cover Order / Estimate'}</h2>
+              <button onClick={onClose} className="px-3 py-1 bg-slate-100 rounded-lg font-bold">✕</button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="md:col-span-2 space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-600">Customer Name *</label>
+                    <input className="w-full border rounded-lg p-2.5 mt-1" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-600">Mobile Number *</label>
+                    <input type="tel" className="w-full border rounded-lg p-2.5 mt-1" value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50 p-3 rounded-lg">
+                  <div>
+                    <label className="text-xs font-bold text-slate-600">Measurement Source</label>
+                    <select className="w-full border rounded-lg p-2.5 mt-1 bg-white" value={form.measurement_source} onChange={(e) => setForm({ ...form, measurement_source: e.target.value })}>
+                      <option>Customer brought</option>
+                      <option>Shop visit</option>
+                    </select>
+                  </div>
+                  {form.measurement_source === 'Shop visit' && (
+                    <>
+                      <div>
+                        <label className="text-xs font-bold text-slate-600">Who Visited?</label>
+                        <input className="w-full border rounded-lg p-2.5 mt-1" value={form.visit_staff_name} onChange={(e) => setForm({ ...form, visit_staff_name: e.target.value })} />
+                      </div>
+                      <div>
+                        <label className="text-xs font-bold text-slate-600">Visit Charge (₹)</label>
+                        <input type="number" className="w-full border rounded-lg p-2.5 mt-1" value={form.visit_charge} onChange={(e) => setForm({ ...form, visit_charge: e.target.value })} />
+                      </div>
+                    </>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-600">Design Name *</label>
+                    <input className="w-full border rounded-lg p-2.5 mt-1" value={form.design_name} onChange={(e) => setForm({ ...form, design_name: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-600">Total Pieces (Pcs) *</label>
+                    <input type="number" disabled={!canEditSpecs} className="w-full border rounded-lg p-2.5 mt-1 disabled:bg-slate-100" value={form.total_pcs} onChange={(e) => setForm({ ...form, total_pcs: e.target.value })} />
+                  </div>
+                </div>
+                <div className="border rounded-lg p-3 space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-xs font-bold uppercase text-slate-700">Seating (Inches: e.g. 81+96+103+58)</span>
+                    <span className="text-xs font-bold text-blue-700">{calc.seatingInches}" → {calc.seatingFeet} ft</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <input disabled={!canEditSpecs} placeholder="81+96+103+58" className="col-span-2 border rounded-lg p-2.5 disabled:bg-slate-100" value={form.seating_segments} onChange={(e) => setForm({ ...form, seating_segments: e.target.value })} />
+                    <input disabled={!canEditSpecs} type="number" placeholder="Rate / ft" className="border rounded-lg p-2.5 disabled:bg-slate-100" value={form.seating_rate} onChange={(e) => setForm({ ...form, seating_rate: e.target.value })} />
+                  </div>
+                </div>
+                <div className="border rounded-lg p-3 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold uppercase text-slate-700">Back</span>
+                      <select disabled={!canEditSpecs} className="border rounded px-2 py-1 text-xs font-bold bg-slate-50" value={form.back_unit} onChange={(e) => setForm({ ...form, back_unit: e.target.value })}>
+                        <option value="Inches">Inches</option>
+                        <option value="Pcs">Pcs</option>
+                      </select>
+                    </div>
+                    <span className="text-xs font-bold text-blue-700">{calc.backRaw} → {calc.backBillable} {form.back_unit === 'Inches' ? 'ft' : 'pcs'}</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <input disabled={!canEditSpecs} placeholder={form.back_unit === 'Inches' ? '80+80+70' : '2+2+3+5'} className="col-span-2 border rounded-lg p-2.5 disabled:bg-slate-100" value={form.back_segments} onChange={(e) => setForm({ ...form, back_segments: e.target.value })} />
+                    <input disabled={!canEditSpecs} type="number" placeholder={form.back_unit === 'Inches' ? 'Rate / ft' : 'Rate / pc'} className="border rounded-lg p-2.5 disabled:bg-slate-100" value={form.back_rate} onChange={(e) => setForm({ ...form, back_rate: e.target.value })} />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-600">Tailor Notes (Lace, joint, piping)</label>
+                  <textarea rows={2} className="w-full border rounded-lg p-2.5 mt-1" value={form.tailor_notes} onChange={(e) => setForm({ ...form, tailor_notes: e.target.value })} />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-600">Salesman *</label>
+                    <select className="w-full border rounded-lg p-2.5 mt-1 bg-white" value={form.salesman_id} onChange={(e) => setForm({ ...form, salesman_id: e.target.value })}>
+                      <option value="">Select Salesman</option>
+                      {salesmen.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-600">Promised Delivery *</label>
+                    <input type="date" className="w-full border rounded-lg p-2.5 mt-1" value={form.promised_date} onChange={(e) => setForm({ ...form, promised_date: e.target.value })} />
+                  </div>
+                  <div className="flex items-center pt-5">
+                    <label className="flex items-center gap-2 cursor-pointer font-semibold text-sm">
+                      <input type="checkbox" className="w-5 h-5" checked={form.home_delivery} onChange={(e) => setForm({ ...form, home_delivery: e.target.checked })} />
+                      Home Delivery
+                    </label>
+                  </div>
+                </div>
+                {(form.home_delivery || form.measurement_source === 'Shop visit') && (
+                  <div>
+                    <label className="text-xs font-bold text-slate-600">Customer Address</label>
+                    <input className="w-full border rounded-lg p-2.5 mt-1" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-slate-900 text-white p-4 rounded-xl flex flex-col justify-between">
+                <div className="space-y-3">
+                  <h3 className="font-bold text-amber-400 uppercase tracking-wider text-xs">Live Estimate (Fixed Rate)</h3>
+                  <div className="flex justify-between text-sm">
+                    <span>Seating ({calc.seatingFeet} ft × ₹{form.seating_rate || 0})</span>
+                    <span className="font-bold">₹{calc.seatingAmount}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span>Back ({calc.backBillable} {form.back_unit === 'Inches' ? 'ft' : 'pcs'} × ₹{form.back_rate || 0})</span>
+                    <span className="font-bold">₹{calc.backAmount}</span>
+                  </div>
+                  {Number(form.visit_charge) > 0 && (
+                    <div className="flex justify-between text-sm">
+                      <span>Visit Charge</span>
+                      <span className="font-bold">₹{form.visit_charge}</span>
+                    </div>
+                  )}
+                  <div className="border-t border-slate-700 pt-2 flex justify-between text-lg font-black">
+                    <span>Estimate Total</span>
+                    <span className="text-emerald-400">₹{calc.total}</span>
+                  </div>
+                  <div className="pt-3 space-y-2">
+                    <label className="text-xs text-slate-300">Advance Amount (₹)</label>
+                    <input type="number" className="w-full bg-slate-800 border border-slate-600 rounded-lg p-2.5 text-white font-bold" value={form.advance_amount} onChange={(e) => setForm({ ...form, advance_amount: e.target.value })} />
+                    <label className="text-xs text-slate-300 block">Payment Mode</label>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {['Cash', 'UPI', 'Card'].map((mode) => (
+                        <button type="button" key={mode} onClick={() => setForm({ ...form, payment_mode: mode })} className={`py-2 rounded text-xs font-bold ${form.payment_mode === mode ? 'bg-amber-500 text-black' : 'bg-slate-800 text-slate-300'}`}>
+                          {mode}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="border-t border-slate-700 pt-3 flex justify-between text-base font-bold">
+                    <span>Balance Due</span>
+                    <span className="text-rose-400">₹{calc.balance}</span>
+                  </div>
+                </div>
+                <div className="space-y-2 mt-6">
+                  {(!existingOrder || ['Measurement Pending', 'Estimate Given'].includes(existingOrder.status)) && (
+                    <>
+                      <button disabled={saving} onClick={() => handleSave(form.seating_segments ? 'Estimate Given' : 'Measurement Pending')} className="w-full bg-slate-700 hover:bg-slate-600 py-3 rounded-lg font-bold text-sm">
+                        💾 Save Estimate / Pending
+                      </button>
+                      <button disabled={saving} onClick={() => handleSave('Confirmed')} className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 py-3.5 rounded-lg font-black text-sm">
+                        ✅ CONFIRM ORDER
+                      </button>
+                    </>
+                  )}
+                  {isConfirmed && (
+                    <button disabled={saving} onClick={() => handleSave(existingOrder.status)} className="w-full bg-amber-500 text-black py-3 rounded-lg font-black text-sm">
+                      Save Changes
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function ProductionBoard({ supabase, profile, scannedOrderNo }) {
+      const [orders, setOrders] = useState([]);
+      const [pieceStats, setPieceStats] = useState({ today: 0, month: 0 });
+      const [selectedTailor, setSelectedTailor] = useState({});
+
+      const fetchProductionData = async () => {
+        const { data } = await supabase.from('production_orders_view').select('*').order('promised_date', { ascending: true });
+        setOrders(data || []);
+        if (profile.role.startsWith('tailor')) {
+          const startOfDay = new Date();
+          startOfDay.setHours(0, 0, 0, 0);
+          const startOfMonth = new Date(startOfDay.getFullYear(), startOfDay.getMonth(), 1);
+          const { data: logs } = await supabase.from('tailor_piece_logs').select('pcs_count, logged_at').gte('logged_at', startOfMonth.toISOString());
+          if (logs) {
+            setPieceStats({
+              month: logs.reduce((s, l) => s + l.pcs_count, 0),
+              today: logs.filter((l) => new Date(l.logged_at) >= startOfDay).reduce((s, l) => s + l.pcs_count, 0)
+            });
+          }
+        }
+      };
+
+      useEffect(() => {
+        fetchProductionData();
+        const channel = supabase.channel('prod-realtime').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, fetchProductionData).subscribe();
+        return () => supabase.removeChannel(channel);
+      }, [profile.role]);
+
+      const handleCuttingDone = async (orderId) => {
+        const tailor = selectedTailor[orderId];
+        if (!tailor) return alert('Pehle Tailor 1 ya Tailor 2 select karein!');
+        const { error } = await supabase.rpc('advance_production_status', { p_order_id: orderId, p_new_status: 'With Tailor', p_assigned_tailor: tailor });
+        if (error) alert(error.message);
+        else fetchProductionData();
+      };
+
+      const handleSilaiDone = async (orderId) => {
+        if (!confirm('Kya silai complete ho gayi hai?')) return;
+        const { error } = await supabase.rpc('advance_production_status', { p_order_id: orderId, p_new_status: 'Silai Done' });
+        if (error) alert(error.message);
+        else fetchProductionData();
+      };
+
+      return (
+        <div className="max-w-2xl mx-auto p-3 space-y-4">
+          {profile.role.startsWith('tailor') && (
+            <div className="bg-slate-900 text-white p-4 rounded-xl flex justify-around text-center">
+              <div>
+                <div className="text-xs text-slate-400 uppercase">Today Pcs</div>
+                <div className="text-3xl font-black text-emerald-400">{pieceStats.today}</div>
+              </div>
+              <div className="border-l border-slate-700" />
+              <div>
+                <div className="text-xs text-slate-400 uppercase">This Month Pcs</div>
+                <div className="text-3xl font-black text-amber-400">{pieceStats.month}</div>
+              </div>
+            </div>
+          )}
+          {orders.length === 0 && (
+            <div className="text-center py-12 bg-white rounded-xl border text-slate-500 font-semibold">Abhi koi pending order nahi hai.</div>
+          )}
+          {orders.map((order) => (
+            <div key={order.id} className={`bg-white rounded-xl p-4 shadow border-2 ${scannedOrderNo === order.order_no ? 'border-amber-500 ring-4 ring-amber-200' : 'border-slate-200'}`}>
+              <div className="flex justify-between items-start border-b pb-2 mb-3">
+                <div>
+                  <span className="bg-slate-900 text-white px-2.5 py-1 rounded font-black text-base">{order.order_no}</span>
+                  <h3 className="font-bold text-lg mt-1">{order.design_name}</h3>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs font-bold bg-amber-100 text-amber-900 px-2 py-1 rounded">DEL: {order.promised_date}</span>
+                  <div className="text-xs font-bold text-slate-500 mt-1">{order.total_pcs} PCS</div>
+                </div>
+              </div>
+              <div className="space-y-1.5 text-sm bg-slate-50 p-3 rounded-lg mb-3">
+                <div><strong>Seating:</strong> {order.seating_segments} → <span className="font-black text-blue-700">{order.seating_feet} ft</span></div>
+                <div><strong>Back:</strong> {order.back_segments} → <span className="font-black text-blue-700">{order.back_billable_qty} {order.back_unit === 'Inches' ? 'ft' : 'pcs'}</span></div>
+                {order.tailor_notes && <div className="text-rose-700 font-semibold pt-1 border-t border-slate-200">Note: {order.tailor_notes}</div>}
+              </div>
+              {profile.role === 'cutting' && order.status === 'Cutting Pending' && (
+                <div className="flex gap-2">
+                  <select className="border-2 border-slate-300 rounded-lg p-3 font-bold bg-white flex-1" value={selectedTailor[order.id] || ''} onChange={(e) => setSelectedTailor({ ...selectedTailor, [order.id]: e.target.value })}>
+                    <option value="">Select Tailor...</option>
+                    <option value="tailor_1">Tailor 1</option>
+                    <option value="tailor_2">Tailor 2</option>
+                  </select>
+                  <button onClick={() => handleCuttingDone(order.id)} className="bg-emerald-600 text-white px-5 py-3 rounded-lg font-black">✂️ Cutting OK</button>
+                </div>
+              )}
+              {profile.role.startsWith('tailor') && order.status === 'With Tailor' && (
+                <button onClick={() => handleSilaiDone(order.id)} className="w-full bg-emerald-600 text-white py-3.5 rounded-lg font-black text-base">✅ Silai Done ({order.total_pcs} Pcs)</button>
+              )}
+              {order.status === 'Silai Done' && <div className="text-center text-emerald-700 font-bold text-sm py-1">🏆 Silai Completed</div>}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function CounterAndAdminView({ supabase, profile, savedKey }) {
+      const isAdmin = profile.role === 'admin';
+      const [orders, setOrders] = useState([]);
+      const [salesmen, setSalesmen] = useState([]);
+      const [settings, setSettings] = useState(null);
+      const [devices, setDevices] = useState([]);
+      const [pieceLogs, setPieceLogs] = useState([]);
+      const [tailorProfiles, setTailorProfiles] = useState([]);
+      const [activityLogs, setActivityLogs] = useState([]);
+
+      const [tab, setTab] = useState('orders');
+      const [search, setSearch] = useState('');
+      const [statusFilter, setStatusFilter] = useState('ALL');
+      const [editingOrder, setEditingOrder] = useState(null);
+      const [showNewModal, setShowNewModal] = useState(false);
+      const [stickerOrder, setStickerOrder] = useState(null);
+      const [newSalesman, setNewSalesman] = useState('');
+      const [adjTailor, setAdjTailor] = useState('tailor_1');
+      const [adjPcs, setAdjPcs] = useState('');
+      const [adjReason, setAdjReason] = useState('');
+
+      const loadAll = async () => {
+        const { data: ord } = await supabase.from('orders').select('*, salesmen(name)').order('created_at', { ascending: false });
+        setOrders(ord || []);
+        const { data: sm } = await supabase.from('salesmen').select('*').eq('is_active', true).order('name');
+        setSalesmen(sm || []);
+        const { data: st } = await supabase.from('app_settings').select('*').single();
+        setSettings(st);
+        if (isAdmin) {
+          const { data: dev } = await supabase.from('devices').select('*').order('created_at', { ascending: false });
+          setDevices(dev || []);
+          const { data: pl } = await supabase.from('tailor_piece_logs').select('*, orders(order_no)').order('logged_at', { ascending: false });
+          setPieceLogs(pl || []);
+          const { data: tp } = await supabase.from('profiles').select('*').in('role', ['tailor_1', 'tailor_2']);
+          setTailorProfiles(tp || []);
+          const { data: al } = await supabase.from('activity_logs').select('*, orders(order_no)').order('created_at', { ascending: false }).limit(100);
+          setActivityLogs(al || []);
+        }
+      };
+
+      useEffect(() => {
+        loadAll();
+        const channel = supabase.channel('orders-realtime').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, loadAll).subscribe();
+        return () => supabase.removeChannel(channel);
+      }, [isAdmin]);
+
+      const updateStatus = async (order, newStatus) => {
+        const { error } = await supabase.from('orders').update({ status: newStatus }).eq('id', order.id);
+        if (error) return alert(error.message);
+        await supabase.from('activity_logs').insert({
+          order_id: order.id,
+          action: `Status changed to ${newStatus}`,
+          old_value: order.status,
+          new_value: newStatus,
+          performed_by: profile.id,
+          performed_by_role: profile.role
+        });
+        loadAll();
+      };
+
+      const handleManualPieceAdjustment = async (e) => {
+        e.preventDefault();
+        if (!adjPcs || !adjReason) return alert('Enter pieces (+ or -) and reason');
+        const tProf = tailorProfiles.find((p) => p.role === adjTailor);
+        const { error } = await supabase.from('tailor_piece_logs').insert({
+          tailor_role: adjTailor,
+          pcs_count: parseInt(adjPcs),
+          rate_at_time: tProf?.piece_rate || 0,
+          is_manual_adjustment: true,
+          adjustment_reason: adjReason,
+          logged_by: profile.id
+        });
+        if (error) return alert(error.message);
+        setAdjPcs('');
+        setAdjReason('');
+        loadAll();
+      };
+
+      const todayStr = new Date().toISOString().split('T')[0];
+      const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+      const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+
+      const filteredOrders = orders.filter((o) => {
+        const matchesSearch = o.order_no.toLowerCase().includes(search.toLowerCase()) || o.customer_name.toLowerCase().includes(search.toLowerCase()) || o.mobile.includes(search);
+        if (!matchesSearch) return false;
+        if (statusFilter === 'ALL') return true;
+        if (statusFilter === 'LATE') return o.promised_date && o.promised_date < todayStr && o.status !== 'Delivered';
+        if (statusFilter === 'UNCONFIRMED') return ['Measurement Pending', 'Estimate Given'].includes(o.status);
+        if (statusFilter === 'DELIVERY_INCOMPLETE') return o.status === 'Ready';
+        return o.status === statusFilter;
+      });
+
+      const confirmedOrders = orders.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status));
+      const salesToday = confirmedOrders.filter((o) => o.created_at?.startsWith(todayStr)).reduce((s, o) => s + Number(o.estimate_total), 0);
+      const salesWeek = confirmedOrders.filter((o) => o.created_at >= weekAgo).reduce((s, o) => s + Number(o.estimate_total), 0);
+      const salesMonth = confirmedOrders.filter((o) => o.created_at >= startOfMonth).reduce((s, o) => s + Number(o.estimate_total), 0);
+      const totalAdvance = confirmedOrders.reduce((s, o) => s + Number(o.advance_amount), 0);
+      const totalBalance = confirmedOrders.reduce((s, o) => s + Number(o.balance_amount), 0);
+      const lateOrders = orders.filter((o) => o.promised_date && o.promised_date < todayStr && o.status !== 'Delivered');
+
+      const staffMagicLink = `${window.location.origin}${window.location.pathname}?setup_key=${encodeURIComponent(savedKey)}`;
+
+      return (
+        <div className="max-w-7xl mx-auto p-3 md:p-6 space-y-4">
+          <div className="flex flex-wrap justify-between items-center gap-3 bg-white p-4 rounded-xl shadow-sm border">
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => setTab('orders')} className={`px-4 py-2 rounded-lg font-bold text-sm ${tab === 'orders' ? 'bg-slate-900 text-white' : 'bg-slate-100'}`}>Orders ({orders.length})</button>
+              {isAdmin && (
+                <>
+                  <button onClick={() => setTab('analytics')} className={`px-4 py-2 rounded-lg font-bold text-sm ${tab === 'analytics' ? 'bg-slate-900 text-white' : 'bg-slate-100'}`}>Admin Dashboard</button>
+                  <button onClick={() => setTab('settings')} className={`px-4 py-2 rounded-lg font-bold text-sm ${tab === 'settings' ? 'bg-slate-900 text-white' : 'bg-slate-100'}`}>⚙️ Devices & Settings</button>
+                </>
+              )}
+            </div>
+            <button onClick={() => setShowNewModal(true)} className="bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-2.5 rounded-lg font-black text-sm shadow">+ New Order / Estimate</button>
+          </div>
+
+          {tab === 'orders' && (
+            <>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input placeholder="🔍 Search Order No (SC-0001), Customer Name, Mobile..." className="flex-1 px-4 py-2.5 border rounded-xl bg-white" value={search} onChange={(e) => setSearch(e.target.value)} />
+                <select className="border rounded-xl px-4 py-2.5 bg-white font-semibold" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                  <option value="ALL">All Orders</option>
+                  <option value="UNCONFIRMED">Unconfirmed Estimates (Follow-up)</option>
+                  <option value="LATE">LATE Orders ({lateOrders.length})</option>
+                  <option value="DELIVERY_INCOMPLETE">Delivery Incomplete (Ready)</option>
+                  <option value="Measurement Pending">Measurement Pending</option>
+                  <option value="Estimate Given">Estimate Given</option>
+                  <option value="Cutting Pending">Cutting Pending</option>
+                  <option value="With Tailor">With Tailor</option>
+                  <option value="Silai Done">Silai Done</option>
+                  <option value="Ready">Ready</option>
+                  <option value="Delivered">Delivered</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {filteredOrders.map((o) => {
+                  const isLate = o.promised_date && o.promised_date < todayStr && o.status !== 'Delivered';
+                  return (
+                    <div key={o.id} className={`bg-white rounded-xl p-4 shadow-sm border-2 flex flex-col justify-between ${isLate ? 'border-rose-500 bg-rose-50/30' : 'border-slate-200'}`}>
+                      <div>
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <span className="font-black text-base text-slate-900">{o.order_no}</span>
+                            {isLate && <span className="ml-2 bg-rose-600 text-white text-[10px] font-black px-2 py-0.5 rounded">LATE</span>}
+                            <h3 className="font-bold text-base mt-0.5">{o.customer_name}</h3>
+                            <p className="text-xs text-slate-500">{o.mobile} • {o.salesmen?.name || 'No Salesman'}</p>
+                          </div>
+                          <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-slate-100 border">{o.status}</span>
+                        </div>
+                        <div className="mt-3 text-xs bg-slate-50 p-2.5 rounded-lg space-y-1">
+                          <div><strong>Design:</strong> {o.design_name} ({o.total_pcs} pcs)</div>
+                          <div><strong>Seating:</strong> {o.seating_segments} ({o.seating_feet} ft)</div>
+                          <div><strong>Back:</strong> {o.back_segments} ({o.back_billable_qty} {o.back_unit})</div>
+                          <div><strong>Total:</strong> ₹{o.estimate_total} | <strong>Adv:</strong> ₹{o.advance_amount} | <strong className="text-rose-600">Bal: ₹{o.balance_amount}</strong></div>
+                          <div><strong>Delivery:</strong> {o.promised_date || 'Not set'} {o.assigned_tailor ? `• ${o.assigned_tailor.toUpperCase()}` : ''}</div>
+                        </div>
+                      </div>
+                      <div className="mt-3 pt-3 border-t flex flex-wrap gap-1.5">
+                        <button onClick={() => setEditingOrder(o)} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg text-xs font-bold">Edit / View</button>
+                        {!['Measurement Pending', 'Estimate Given'].includes(o.status) && (
+                          <button onClick={() => setStickerOrder(o)} className="px-3 py-1.5 bg-amber-100 text-amber-900 rounded-lg text-xs font-bold">🖨️ Sticker</button>
+                        )}
+                        {o.status === 'Silai Done' && <button onClick={() => updateStatus(o, 'Ready')} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold">Mark Ready</button>}
+                        {o.status === 'Ready' && <button onClick={() => updateStatus(o, 'Delivered')} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold">Mark Delivered</button>}
+                        <a href={WhatsAppService.getLink(o.status === 'Ready' ? 'ready' : o.status === 'Delivered' ? 'delivered' : 'receipt', o)} target="_blank" rel="noreferrer" className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold ml-auto">💬 WA</a>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {isAdmin && tab === 'analytics' && (
+            <div className="space-y-6">
+              <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+                <div className="bg-white p-4 rounded-xl border"><div className="text-xs text-slate-500 font-bold">Today Sales</div><div className="text-xl font-black">₹{salesToday.toLocaleString()}</div></div>
+                <div className="bg-white p-4 rounded-xl border"><div className="text-xs text-slate-500 font-bold">7-Day Sales</div><div className="text-xl font-black">₹{salesWeek.toLocaleString()}</div></div>
+                <div className="bg-white p-4 rounded-xl border"><div className="text-xs text-slate-500 font-bold">Month Sales</div><div className="text-xl font-black">₹{salesMonth.toLocaleString()}</div></div>
+                <div className="bg-white p-4 rounded-xl border"><div className="text-xs text-slate-500 font-bold">Advance Collected</div><div className="text-xl font-black text-emerald-600">₹{totalAdvance.toLocaleString()}</div></div>
+                <div className="bg-white p-4 rounded-xl border"><div className="text-xs text-slate-500 font-bold">Balance Due</div><div className="text-xl font-black text-rose-600">₹{totalBalance.toLocaleString()}</div></div>
+                <div className="bg-rose-50 p-4 rounded-xl border border-rose-300"><div className="text-xs text-rose-700 font-bold">LATE Orders</div><div className="text-xl font-black text-rose-700">{lateOrders.length}</div></div>
+              </div>
+              <div className="bg-white p-4 rounded-xl border space-y-4">
+                <div className="flex flex-wrap justify-between items-center gap-2">
+                  <h3 className="font-bold text-base">Tailor Piece Counts & Manual Adjustment</h3>
+                  <form onSubmit={handleManualPieceAdjustment} className="flex flex-wrap gap-2">
+                    <select className="border rounded px-2 py-1 text-sm" value={adjTailor} onChange={(e) => setAdjTailor(e.target.value)}>
+                      <option value="tailor_1">Tailor 1</option>
+                      <option value="tailor_2">Tailor 2</option>
+                    </select>
+                    <input type="number" placeholder="+/- Pcs" className="border rounded px-2 py-1 text-sm w-24" value={adjPcs} onChange={(e) => setAdjPcs(e.target.value)} />
+                    <input placeholder="Reason for correction..." className="border rounded px-2 py-1 text-sm" value={adjReason} onChange={(e) => setAdjReason(e.target.value)} />
+                    <button className="bg-slate-900 text-white px-3 py-1 rounded text-xs font-bold">Log Correction</button>
+                  </form>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm text-left">
+                    <thead className="bg-slate-50 text-xs uppercase"><tr><th className="p-2">Date</th><th className="p-2">Tailor</th><th className="p-2">Order / Reason</th><th className="p-2">Pcs</th><th className="p-2">Rate</th><th className="p-2">Earning</th></tr></thead>
+                    <tbody>
+                      {pieceLogs.map((l) => (
+                        <tr key={l.id} className="border-t">
+                          <td className="p-2">{new Date(l.logged_at).toLocaleDateString()}</td>
+                          <td className="p-2 font-bold uppercase">{l.tailor_role}</td>
+                          <td className="p-2">{l.is_manual_adjustment ? `Correction: ${l.adjustment_reason}` : l.orders?.order_no}</td>
+                          <td className="p-2 font-bold">{l.pcs_count}</td>
+                          <td className="p-2">₹{l.rate_at_time}</td>
+                          <td className="p-2 font-bold text-emerald-700">₹{l.pcs_count * l.rate_at_time}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isAdmin && tab === 'settings' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-white p-4 rounded-xl border space-y-3">
+                <h3 className="font-bold">📲 Share Ready-Connected Link to Staff Phones</h3>
+                <p className="text-xs text-slate-600">Jab Cutting Master ya Tailor is link ko kholenge, unke phone mein database key apne aap set ho jayegi:</p>
+                <div className="flex gap-2">
+                  <button onClick={() => { navigator.clipboard.writeText(staffMagicLink); alert('Staff Install Link copied! WhatsApp par bhej dein.'); }} className="bg-emerald-600 text-white px-4 py-2.5 rounded-lg text-xs font-black">
+                    📋 Copy Staff Auto-Setup Link
+                  </button>
+                  <a href={`https://wa.me/?text=${encodeURIComponent('Sofa Cover App Link (Open in Chrome & tap Add to Home Screen):\n' + staffMagicLink)}`} target="_blank" rel="noreferrer" className="bg-green-600 text-white px-4 py-2.5 rounded-lg text-xs font-black">
+                    💬 Send on WhatsApp
+                  </a>
+                </div>
+
+                <h3 className="font-bold pt-4 border-t">🛡️ Device Approval Gate</h3>
+                {devices.map((d) => (
+                  <div key={d.id} className="flex justify-between items-center border-b pb-2 text-sm">
+                    <div>
+                      <div className="font-bold">{d.device_name} ({d.requested_role})</div>
+                      <div className="text-xs text-slate-400">{d.device_fingerprint} • Status: <b>{d.status}</b></div>
+                    </div>
+                    <div className="flex gap-1">
+                      {d.status !== 'approved' && (
+                        <button onClick={async () => { await supabase.from('devices').update({ status: 'approved', approved_by: profile.id }).eq('id', d.id); loadAll(); }} className="bg-emerald-600 text-white px-2.5 py-1 rounded text-xs font-bold">Allow</button>
+                      )}
+                      <button onClick={async () => { await supabase.from('devices').delete().eq('id', d.id); loadAll(); }} className="bg-rose-100 text-rose-700 px-2.5 py-1 rounded text-xs font-bold">Remove</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="space-y-4">
+                <div className="bg-white p-4 rounded-xl border space-y-3">
+                  <h3 className="font-bold">📏 Sticker Dimensions (mm)</h3>
+                  {settings && (
+                    <div className="flex gap-2 items-end">
+                      <div><label className="text-xs font-bold">Width (mm)</label><input type="number" className="border rounded p-2 w-24 block" value={settings.sticker_width_mm} onChange={(e) => setSettings({ ...settings, sticker_width_mm: e.target.value })} /></div>
+                      <div><label className="text-xs font-bold">Height (mm)</label><input type="number" className="border rounded p-2 w-24 block" value={settings.sticker_height_mm} onChange={(e) => setSettings({ ...settings, sticker_height_mm: e.target.value })} /></div>
+                      <button onClick={async () => { await supabase.from('app_settings').update({ sticker_width_mm: settings.sticker_width_mm, sticker_height_mm: settings.sticker_height_mm }).eq('id', 1); alert('Saved!'); }} className="bg-slate-900 text-white px-4 py-2 rounded font-bold text-sm">Save Size</button>
+                    </div>
+                  )}
+                </div>
+                <div className="bg-white p-4 rounded-xl border space-y-3">
+                  <h3 className="font-bold">👤 Manage Salesmen List</h3>
+                  <div className="flex gap-2">
+                    <input placeholder="New Salesman Name" className="border rounded-lg p-2 flex-1 text-sm" value={newSalesman} onChange={(e) => setNewSalesman(e.target.value)} />
+                    <button onClick={async () => { if (!newSalesman) return; await supabase.from('salesmen').insert({ name: newSalesman }); setNewSalesman(''); loadAll(); }} className="bg-slate-900 text-white px-4 py-2 rounded-lg font-bold text-sm">Add</button>
+                  </div>
+                  <div className="flex flex-wrap gap-2 pt-2">
+                    {salesmen.map((s) => <span key={s.id} className="bg-slate-100 px-3 py-1 rounded-full text-xs font-bold">{s.name}</span>)}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {(showNewModal || editingOrder) && (
+            <OrderFormModal supabase={supabase} existingOrder={editingOrder} salesmen={salesmen} profile={profile} onClose={() => { setShowNewModal(false); setEditingOrder(null); }} onSaved={(saved, wasConfirmed) => { setShowNewModal(false); setEditingOrder(null); loadAll(); if (wasConfirmed) setStickerOrder(saved); }} />
+          )}
+          {stickerOrder && <StickerModal order={stickerOrder} settings={settings} onClose={() => setStickerOrder(null)} />}
+        </div>
+      );
+    }
+
+    const STAFF_ACCOUNTS = [
+      { label: '1. Owner (Admin)', email: 'admin@shop.local', role: 'admin' },
+      { label: '2. Sales Counter', email: 'sales@shop.local', role: 'sales' },
+      { label: '3. Cutting Master', email: 'cutting@shop.local', role: 'cutting' },
+      { label: '4. Tailor 1', email: 'tailor1@shop.local', role: 'tailor_1' },
+      { label: '5. Tailor 2', email: 'tailor2@shop.local', role: 'tailor_2' }
+    ];
+
+    function App() {
+      const [savedKey, setSavedKey] = useState(() => localStorage.getItem('sg_supabase_key') || '');
+      const [keyInput, setKeyInput] = useState('');
+      const [supabaseClient, setSupabaseClient] = useState(null);
+      const [session, setSession] = useState(null);
+      const [profile, setProfile] = useState(null);
+      const [deviceStatus, setDeviceStatus] = useState('checking');
+      const [selectedStaff, setSelectedStaff] = useState(STAFF_ACCOUNTS[0]);
+      const [pin, setPin] = useState('');
+      const [loading, setLoading] = useState(false);
+      const [installPrompt, setInstallPrompt] = useState(null);
+
+      const scannedOrderNo = new URLSearchParams(window.location.search).get('scan');
+
+      useEffect(() => {
+        const handler = (e) => {
+          e.preventDefault();
+          setInstallPrompt(e);
+        };
+        window.addEventListener('beforeinstallprompt', handler);
+        return () => window.removeEventListener('beforeinstallprompt', handler);
+      }, []);
+
+      const triggerInstall = async () => {
+        if (installPrompt) {
+          installPrompt.prompt();
+          await installPrompt.userChoice;
+          setInstallPrompt(null);
+        } else {
+          alert('App Install karne ke liye:\n\n• Mobile Chrome: Upar 3-dots (⋮) dabayein -> "Add to Home screen" ya "Install app" par click karein.\n• PC Chrome: Upar address bar ke right corner mein Install icon par click karein.');
+        }
+      };
+
+      useEffect(() => {
+        if (savedKey && savedKey.length > 15) {
+          setSupabaseClient(createClient(DEFAULT_SUPABASE_URL, savedKey.trim()));
+        } else {
+          setSupabaseClient(null);
+        }
+      }, [savedKey]);
+
+      useEffect(() => {
+        if (!supabaseClient) return;
+        supabaseClient.auth.getSession().then(({ data: { session } }) => {
+          setSession(session);
+          if (session) verifyProfileAndDevice(supabaseClient, session.user.id);
+          else setDeviceStatus('unauthenticated');
+        });
+        const { data: { subscription } } = supabaseClient.auth.onAuthStateChange((_event, session) => {
+          setSession(session);
+          if (session) verifyProfileAndDevice(supabaseClient, session.user.id);
+          else {
+            setProfile(null);
+            setDeviceStatus('unauthenticated');
+          }
+        });
+        return () => subscription.unsubscribe();
+      }, [supabaseClient]);
+
+      const verifyProfileAndDevice = async (client, userId) => {
+        const { data: prof } = await client.from('profiles').select('*').eq('id', userId).maybeSingle();
+        if (!prof) return;
+        setProfile(prof);
+        const fp = getDeviceFingerprint();
+        const { data: dev } = await client.from('devices').select('*').eq('device_fingerprint', fp).maybeSingle();
+        if (!dev) {
+          await client.from('devices').insert({
+            device_fingerprint: fp,
+            device_name: navigator.userAgent.slice(0, 45),
+            requested_role: prof.role,
+            status: 'pending'
+          });
+          setDeviceStatus('pending');
+        } else {
+          setDeviceStatus(dev.status);
+        }
+      };
+
+      const handlePinLogin = async (e) => {
+        e.preventDefault();
+        if (!supabaseClient) return;
+        setLoading(true);
+        const { error } = await supabaseClient.auth.signInWithPassword({
+          email: selectedStaff.email,
+          password: `SG_${pin}_PIN`
+        });
+        if (error) alert('Invalid PIN! Check your 4-digit PIN.');
+        setLoading(false);
+      };
+
+      if (!supabaseClient) {
+        return (
+          <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center p-4">
+            <div className="bg-slate-800 border border-amber-500/40 p-6 rounded-2xl max-w-md w-full space-y-4">
+              <div className="text-center">
+                <div className="text-4xl mb-2">🔑</div>
+                <h1 className="text-xl font-black text-amber-400">One-Time Database Setup</h1>
+                <p className="text-xs text-slate-300 mt-1">Supabase Project: <b>qsyubbefhttdfiglbtbt</b></p>
+              </div>
+              <form onSubmit={(e) => { e.preventDefault(); localStorage.setItem('sg_supabase_key', keyInput.trim()); setSavedKey(keyInput.trim()); }} className="space-y-3">
+                <input
+                  placeholder="Paste sb_publishable_... key here"
+                  className="w-full bg-slate-900 border border-slate-600 rounded-xl p-3 text-sm text-white font-mono"
+                  value={keyInput}
+                  onChange={(e) => setKeyInput(e.target.value)}
+                />
+                <button className="w-full bg-emerald-500 text-slate-950 py-3.5 rounded-xl font-black text-sm">
+                  Connect Database & Start Live App
+                </button>
+              </form>
+            </div>
+          </div>
+        );
+      }
+
+      if (session && deviceStatus !== 'approved') {
+        return (
+          <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center p-4">
+            <div className="bg-slate-800 p-6 rounded-2xl max-w-sm w-full text-center space-y-4">
+              <div className="text-4xl">📱</div>
+              <h2 className="text-xl font-black">Device Approval Pending</h2>
+              <p className="text-sm text-slate-300">Device ID: <b>{getDeviceFingerprint()}</b><br />Admin se is device ko allow karne ke liye kahein.</p>
+              <button onClick={() => verifyProfileAndDevice(supabaseClient, session.user.id)} className="w-full bg-amber-500 text-black py-2.5 rounded-lg font-bold">Refresh Status</button>
+              <button onClick={() => supabaseClient.auth.signOut()} className="text-xs text-slate-400 underline block mx-auto">Logout</button>
+            </div>
+          </div>
+        );
+      }
+
+      if (!session || !profile) {
+        return (
+          <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+            <div className="bg-white p-6 rounded-2xl shadow-xl max-w-sm w-full space-y-5">
+              <div className="text-center">
+                <div className="text-3xl mb-1">🔒</div>
+                <h1 className="text-xl font-black">Sofa Cover Department</h1>
+                <p className="text-xs text-slate-500">Shree Gayatri Furnishing Hub</p>
+              </div>
+              <form onSubmit={handlePinLogin} className="space-y-3">
+                <div>
+                  <label className="text-xs font-bold text-slate-600">Select Role</label>
+                  <select className="w-full border rounded-xl p-3 mt-1 font-bold bg-white" value={selectedStaff.email} onChange={(e) => setSelectedStaff(STAFF_ACCOUNTS.find((s) => s.email === e.target.value))}>
+                    {STAFF_ACCOUNTS.map((s) => <option key={s.email} value={s.email}>{s.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-600">Enter 4-Digit PIN</label>
+                  <input type="password" maxLength={4} inputMode="numeric" placeholder="••••" className="w-full border rounded-xl p-3 mt-1 text-center text-2xl tracking-widest font-black" value={pin} onChange={(e) => setPin(e.target.value)} />
+                </div>
+                <button disabled={loading || pin.length < 4} className="w-full bg-slate-900 text-white py-3.5 rounded-xl font-black">
+                  {loading ? 'Checking...' : 'Login'}
+                </button>
+              </form>
+              <button onClick={triggerInstall} className="w-full bg-amber-100 text-amber-900 py-2.5 rounded-xl font-bold text-xs">
+                📲 Install App on PC / Mobile
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen bg-slate-100">
+          <header className="bg-slate-900 text-white px-4 py-3 flex justify-between items-center sticky top-0 z-30">
+            <div>
+              <span className="font-black text-base">SOFA COVER OPS</span>
+              <span className="ml-2 text-xs bg-amber-500 text-black font-black px-2 py-0.5 rounded uppercase">{profile.role.replace('_', ' ')}</span>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={triggerInstall} className="text-xs bg-amber-500 text-black px-3 py-2 rounded-lg font-bold">📲 Install</button>
+              <button onClick={() => supabaseClient.auth.signOut()} className="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-2 rounded-lg font-bold">Logout</button>
+            </div>
+          </header>
+          {['admin', 'sales'].includes(profile.role) ? (
+            <CounterAndAdminView supabase={supabaseClient} profile={profile} savedKey={savedKey} />
+          ) : (
+            <ProductionBoard supabase={supabaseClient} profile={profile} scannedOrderNo={scannedOrderNo} />
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

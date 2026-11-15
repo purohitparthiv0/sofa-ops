@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#111827" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -18,8 +18,43 @@
   <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
   <style>
-    body, #root { margin: 0; padding: 0; background: #f3f4f6; color: #111827; font-family: 'Inter', system-ui, -apple-system, sans-serif; font-size: 14px; }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body, #root {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      max-width: 100vw;
+      overflow-x: hidden;
+      background: #f3f4f6;
+      color: #111827;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      -webkit-text-size-adjust: 100%;
+    }
     .tabular-nums { font-variant-numeric: tabular-nums; }
+
+    /* Mobile-specific responsive rules (< 768px) */
+    @media (max-width: 767px) {
+      html, body, #root {
+        font-size: 15px;
+      }
+      .mobile-touch-target,
+      button,
+      select,
+      input[type="text"],
+      input[type="tel"],
+      input[type="number"],
+      input[type="date"],
+      input[type="password"] {
+        min-height: 44px;
+        font-size: 15px;
+      }
+      .mobile-label {
+        font-size: 13px !important;
+        line-height: 1.35 !important;
+      }
+    }
+
     @media print {
       body * { visibility: hidden; }
       #printable-area, #printable-area * { visibility: visible; }
@@ -240,7 +275,7 @@
       };
       const cls = map[status] || 'bg-gray-100 text-gray-700 border-gray-300';
       return (
-        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold border whitespace-nowrap ${cls}`}>
+        <span className={`inline-flex items-center px-2.5 py-0.5 rounded text-xs font-semibold border whitespace-nowrap ${cls}`}>
           {status}
         </span>
       );
@@ -345,13 +380,11 @@
         const advance = isUnconfirmed ? 0 : (status === 'Delivered' && i % 2 === 0 ? calc.total : Math.round((calc.total * 0.5) / 100) * 100);
         const balance = calc.total - advance;
 
-        // Date offsets: create overdue, due today, due tomorrow, and past completed orders
         const createdDaysAgo = 1 + (i % 14);
         const createdAt = new Date(now - createdDaysAgo * 86400000).toISOString();
-        const dueOffsetDays = status === 'Delivered' ? -1 : (i % 7) - 3; // -3 to +3 days
+        const dueOffsetDays = status === 'Delivered' ? -1 : (i % 7) - 3;
         const promisedDate = new Date(now + dueOffsetDays * 86400000).toISOString().split('T')[0];
 
-        // Stage aging: make some stuck > 36h
         const stageAgeHours = (i % 5 === 0) ? 54 : (4 + (i % 18));
         const stageChangedAt = new Date(now - stageAgeHours * 3600000).toISOString();
         const assignedTailor = ['With Tailor', 'Silai Done', 'Ready', 'Delivered'].includes(status)
@@ -454,7 +487,7 @@
 
       return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-md border border-gray-300 max-w-lg w-full p-5 shadow-lg">
+          <div className="bg-white rounded-md border border-gray-300 max-w-lg w-full p-4 md:p-5 shadow-lg">
             <div className="flex justify-between items-center border-b border-gray-200 pb-3 mb-4">
               <div>
                 <h3 className="font-bold text-base text-gray-900">
@@ -462,7 +495,7 @@
                 </h3>
                 <p className="text-xs text-gray-500">Label size: {w} × {h} mm • Thermal / PDF ready</p>
               </div>
-              <button onClick={onClose} className="p-1.5 text-gray-500 hover:bg-gray-100 rounded">
+              <button onClick={onClose} className="p-2 min-w-[44px] min-h-[44px] text-gray-500 hover:bg-gray-100 rounded inline-flex items-center justify-center">
                 <Icon name="X" size={18} />
               </button>
             </div>
@@ -502,11 +535,11 @@
               })}
             </div>
 
-            <div className="flex gap-2">
-              <button onClick={handlePrint} className="flex-1 bg-amber-700 hover:bg-amber-800 text-white py-2.5 px-4 rounded font-semibold text-sm inline-flex items-center justify-center gap-2">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <button onClick={handlePrint} className="flex-1 bg-amber-700 hover:bg-amber-800 text-white py-2.5 px-4 rounded font-semibold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]">
                 <Icon name="Printer" size={16} /> Print {ordersList.length > 1 ? `All (${ordersList.length})` : 'Sticker'}
               </button>
-              <button onClick={handleCopyCSV} className="border border-gray-300 hover:bg-gray-50 text-gray-800 py-2.5 px-4 rounded font-semibold text-sm inline-flex items-center justify-center gap-2">
+              <button onClick={handleCopyCSV} className="border border-gray-300 hover:bg-gray-50 text-gray-800 py-2.5 px-4 rounded font-semibold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]">
                 <Icon name="Copy" size={16} /> Copy CSV
               </button>
             </div>
@@ -522,13 +555,13 @@
       const logs = activityLogs.filter((l) => l.order_no === order.order_no);
       return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-md border border-gray-300 max-w-lg w-full p-5 shadow-lg">
+          <div className="bg-white rounded-md border border-gray-300 max-w-lg w-full p-4 md:p-5 shadow-lg">
             <div className="flex justify-between items-center border-b border-gray-200 pb-3 mb-4">
               <div>
                 <h3 className="font-bold text-base text-gray-900">Order Audit Timeline — {order.order_no}</h3>
                 <p className="text-xs text-gray-500">{order.customer_name} • {order.design_name}</p>
               </div>
-              <button onClick={onClose} className="p-1.5 text-gray-500 hover:bg-gray-100 rounded">
+              <button onClick={onClose} className="p-2 min-w-[44px] min-h-[44px] text-gray-500 hover:bg-gray-100 rounded inline-flex items-center justify-center">
                 <Icon name="X" size={18} />
               </button>
             </div>
@@ -555,6 +588,7 @@
 
     // =========================================================================
     // KEYBOARD-FIRST ONE-SCREEN ORDER ENTRY + REVIEW & CONFIRM FLOW
+    // (Stacks cleanly in 1 column on mobile < 768px, 3-col split on desktop)
     // =========================================================================
     function OrderEntryScreen({ existingOrder, allOrders, salesmen, currentRole, onCancel, onCommitOrder }) {
       const isConfirmed = existingOrder && !['Measurement Pending', 'Estimate Given'].includes(existingOrder.status);
@@ -596,7 +630,6 @@
       const [reviewMode, setReviewMode] = useState(false);
       const [errorMsg, setErrorMsg] = useState('');
 
-      // Autosave draft
       useEffect(() => {
         if (!existingOrder) {
           localStorage.setItem(draftKey, JSON.stringify(form));
@@ -604,7 +637,6 @@
         }
       }, [form]);
 
-      // Returning Customer lookup by mobile number
       const matchingPastOrders = useMemo(() => {
         const cleanMob = String(form.mobile || '').replace(/\D/g, '');
         if (cleanMob.length < 10) return [];
@@ -626,7 +658,6 @@
         setForm((f) => ({ ...f, ...updates }));
       };
 
-      // Keyboard-first navigation: Enter moves to next field; inside segment inputs, Enter appends '+' if trailing digit
       const formRef = useRef(null);
       const handleFieldKeyDown = (e, isSegmentField = false) => {
         if (e.key !== 'Enter') return;
@@ -690,16 +721,16 @@
       return (
         <div className="bg-white border border-gray-300 rounded-md shadow-sm">
           {/* Top Bar */}
-          <div className="px-5 py-3.5 border-b border-gray-200 flex flex-wrap justify-between items-center gap-3 bg-gray-50">
+          <div className="px-4 md:px-5 py-3.5 border-b border-gray-200 flex flex-wrap justify-between items-center gap-3 bg-gray-50">
             <div className="flex items-center gap-3">
-              <button onClick={onCancel} className="px-2.5 py-1.5 border border-gray-300 bg-white hover:bg-gray-100 rounded text-xs font-semibold text-gray-700 inline-flex items-center gap-1">
+              <button onClick={onCancel} className="px-3 py-2 border border-gray-300 bg-white hover:bg-gray-100 rounded text-xs font-semibold text-gray-700 inline-flex items-center gap-1.5 min-h-[44px] md:min-h-0">
                 <Icon name="ArrowLeft" size={14} /> Back to Queue
               </button>
               <div>
                 <h2 className="font-bold text-base text-gray-900">
                   {existingOrder ? `Edit Order ${existingOrder.order_no}` : 'New Sofa Cover Order / Estimate'}
                 </h2>
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-gray-500 hidden sm:block">
                   Keyboard mode: Press <kbd className="px-1 py-0.5 bg-gray-200 rounded text-[11px]">Enter</kbd> to advance fields or add <code className="font-bold">+</code> between segments
                 </p>
               </div>
@@ -721,7 +752,7 @@
                       advance_amount: 0, payment_mode: 'Cash', salesman_name: salesmen[0] || '', promised_date: ''
                     });
                   }}
-                  className="text-xs text-gray-600 hover:text-gray-900 underline"
+                  className="text-xs text-gray-600 hover:text-gray-900 underline py-2 px-1"
                 >
                   Clear Form
                 </button>
@@ -730,20 +761,20 @@
           </div>
 
           {errorMsg && (
-            <div className="mx-5 mt-4 p-3 bg-red-50 border border-red-300 text-red-800 rounded text-sm font-medium flex items-center gap-2">
+            <div className="mx-4 md:mx-5 mt-4 p-3 bg-red-50 border border-red-300 text-red-800 rounded text-sm font-medium flex items-center gap-2">
               <Icon name="AlertCircle" size={16} /> {errorMsg}
             </div>
           )}
 
-          {/* Split Screen: Form Left (2 cols) + Live Estimate Sticky Right (1 col) */}
-          <div ref={formRef} className="p-5 grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Split Screen: Form Left (2 cols on lg) + Live Estimate Right (1 col on lg, stacked 1 col on mobile) */}
+          <div ref={formRef} className="p-4 md:p-5 grid grid-cols-1 lg:grid-cols-3 gap-5 md:gap-6">
             <div className="lg:col-span-2 space-y-5">
               {/* Section 1: Customer Details */}
-              <div className="border border-gray-200 rounded p-4 space-y-3">
+              <div className="border border-gray-200 rounded p-3.5 md:p-4 space-y-3.5">
                 <div className="text-xs font-bold uppercase tracking-wider text-gray-500">1. Customer & Delivery Details</div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700 mb-1">Mobile Number (10 digits) *</label>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Mobile Number (10 digits) *</label>
                     <input
                       autoFocus
                       type="tel"
@@ -755,7 +786,7 @@
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700 mb-1">Customer Name *</label>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Customer Name *</label>
                     <input
                       placeholder="Full Name"
                       className="w-full border border-gray-300 focus:border-amber-600 focus:outline-none rounded px-3 py-2 text-sm"
@@ -765,7 +796,7 @@
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700 mb-1">Salesman *</label>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Salesman *</label>
                     <select
                       className="w-full border border-gray-300 focus:border-amber-600 focus:outline-none rounded px-3 py-2 text-sm bg-white"
                       value={form.salesman_name}
@@ -779,7 +810,7 @@
                 </div>
 
                 {matchingPastOrders.length > 0 && (
-                  <div className="bg-amber-50 border border-amber-200 rounded p-2.5 text-xs text-amber-900 flex flex-wrap justify-between items-center gap-2">
+                  <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-900 flex flex-wrap justify-between items-center gap-2">
                     <span>
                       <strong>Returning Customer:</strong> Found {matchingPastOrders.length} past order(s) — Latest: <b>{matchingPastOrders[0].order_no}</b> ({matchingPastOrders[0].design_name}, {formatDateDDMMYYYY(matchingPastOrders[0].created_at)})
                     </span>
@@ -795,16 +826,16 @@
                           total_pcs: f.total_pcs || prev.total_pcs
                         }));
                       }}
-                      className="px-2 py-1 bg-amber-700 text-white rounded font-semibold"
+                      className="px-3 py-2 bg-amber-700 text-white rounded font-semibold min-h-[44px] md:min-h-0"
                     >
                       Copy Past Measurements
                     </button>
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 pt-1">
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700 mb-1">Measurement Source</label>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Measurement Source</label>
                     <select
                       className="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-white"
                       value={form.measurement_source}
@@ -816,7 +847,7 @@
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700 mb-1">Promised Delivery Date *</label>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Promised Delivery Date *</label>
                     <input
                       type="date"
                       className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
@@ -825,11 +856,11 @@
                       onKeyDown={(e) => handleFieldKeyDown(e)}
                     />
                   </div>
-                  <div className="flex items-end pb-2">
-                    <label className="inline-flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-800">
+                  <div className="flex items-center pt-1 md:pt-5">
+                    <label className="inline-flex items-center gap-2.5 cursor-pointer text-sm font-medium text-gray-800 min-h-[44px]">
                       <input
                         type="checkbox"
-                        className="w-4 h-4 accent-amber-700"
+                        className="w-5 h-5 accent-amber-700"
                         checked={form.home_delivery}
                         onChange={(e) => setForm({ ...form, home_delivery: e.target.checked })}
                       />
@@ -839,9 +870,9 @@
                 </div>
 
                 {form.measurement_source === 'Shop visit' && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-gray-50 p-3 rounded border border-gray-200">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 bg-gray-50 p-3 rounded border border-gray-200">
                     <div>
-                      <label className="block text-xs font-semibold text-gray-700 mb-1">Staff Who Visited</label>
+                      <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Staff Who Visited</label>
                       <input
                         className="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-white"
                         value={form.visit_staff_name}
@@ -850,7 +881,7 @@
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-gray-700 mb-1">Visit Charge (₹)</label>
+                      <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Visit Charge (₹)</label>
                       <input
                         type="number"
                         className="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-white tabular-nums"
@@ -864,7 +895,7 @@
 
                 {(form.home_delivery || form.measurement_source === 'Shop visit' || form.address) && (
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700 mb-1">Customer Address</label>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Customer Address</label>
                     <input
                       placeholder="House/Flat No, Society, Area"
                       className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
@@ -877,15 +908,15 @@
               </div>
 
               {/* Section 2: Fabric & Measurements */}
-              <div className="border border-gray-200 rounded p-4 space-y-4">
-                <div className="flex justify-between items-center">
+              <div className="border border-gray-200 rounded p-3.5 md:p-4 space-y-4">
+                <div className="flex flex-wrap justify-between items-center gap-2">
                   <span className="text-xs font-bold uppercase tracking-wider text-gray-500">2. Fabric & Measurements (Fixed Rate — No Discount)</span>
                   {!canEditSpecs && <span className="text-xs text-amber-800 font-semibold">Locked after confirmation (Admin only)</span>}
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div className="sm:col-span-2">
-                    <label className="block text-xs font-semibold text-gray-700 mb-1">Design / Fabric Name & Shade *</label>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Design / Fabric Name & Shade *</label>
                     <input
                       placeholder="e.g. Velvet Jacquard Beige 402"
                       className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
@@ -895,7 +926,7 @@
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700 mb-1">Total Pieces (Pcs) *</label>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Total Pieces (Pcs) *</label>
                     <input
                       type="number"
                       disabled={!canEditSpecs}
@@ -909,21 +940,21 @@
                 </div>
 
                 {/* Seating */}
-                <div className="bg-gray-50 border border-gray-200 rounded p-3 space-y-2">
-                  <div className="flex justify-between items-center">
+                <div className="bg-gray-50 border border-gray-200 rounded p-3 space-y-2.5">
+                  <div className="flex justify-between items-center gap-2">
                     <span className="text-xs font-bold text-gray-800">SEATING SEGMENTS (Always Inches)</span>
                     <button
                       type="button"
                       disabled={!canEditSpecs}
                       onClick={() => setForm((f) => ({ ...f, seating_segments: f.seating_segments ? String(f.seating_segments).replace(/\+*$/, '') + '+' : '' }))}
-                      className="text-xs font-semibold px-2 py-0.5 bg-white border border-gray-300 rounded hover:bg-gray-100"
+                      className="text-xs font-semibold px-3 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-100 min-h-[44px] md:min-h-0"
                     >
                       + Add segment
                     </button>
                   </div>
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="col-span-2">
-                      <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">Segments in Inches (e.g. 88+99+66)</label>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="md:col-span-2">
+                      <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Segments in Inches (e.g. 88+99+66)</label>
                       <input
                         name="seating_segments"
                         disabled={!canEditSpecs}
@@ -935,7 +966,7 @@
                       />
                     </div>
                     <div>
-                      <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">Rate per ft (₹)</label>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Rate per ft (₹)</label>
                       <input
                         disabled={!canEditSpecs}
                         type="number"
@@ -947,19 +978,19 @@
                       />
                     </div>
                   </div>
-                  <div className="text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 tabular-nums">
+                  <div className="text-xs md:text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2 tabular-nums">
                     {calc.seatingLine}
                   </div>
                 </div>
 
                 {/* Back */}
-                <div className="bg-gray-50 border border-gray-200 rounded p-3 space-y-2">
-                  <div className="flex justify-between items-center">
+                <div className="bg-gray-50 border border-gray-200 rounded p-3 space-y-2.5">
+                  <div className="flex flex-wrap justify-between items-center gap-2">
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-bold text-gray-800">BACK SEGMENTS</span>
                       <select
                         disabled={!canEditSpecs}
-                        className="border border-gray-300 rounded px-2 py-0.5 text-xs font-semibold bg-white"
+                        className="border border-gray-300 rounded px-2.5 py-1 text-xs font-semibold bg-white min-h-[44px] md:min-h-0"
                         value={form.back_unit}
                         onChange={(e) => setForm((f) => ({ ...f, back_unit: e.target.value }))}
                       >
@@ -971,14 +1002,14 @@
                       type="button"
                       disabled={!canEditSpecs}
                       onClick={() => setForm((f) => ({ ...f, back_segments: f.back_segments ? String(f.back_segments).replace(/\+*$/, '') + '+' : '' }))}
-                      className="text-xs font-semibold px-2 py-0.5 bg-white border border-gray-300 rounded hover:bg-gray-100"
+                      className="text-xs font-semibold px-3 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-100 min-h-[44px] md:min-h-0"
                     >
                       + Add segment
                     </button>
                   </div>
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="col-span-2">
-                      <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="md:col-span-2">
+                      <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">
                         {form.back_unit === 'Inches' ? 'Segments in Inches (e.g. 80+90+60)' : 'Segments in Pcs (e.g. 2+2+3+5)'}
                       </label>
                       <input
@@ -992,7 +1023,7 @@
                       />
                     </div>
                     <div>
-                      <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">
+                      <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">
                         {form.back_unit === 'Inches' ? 'Rate per ft (₹)' : 'Rate per pc (₹)'}
                       </label>
                       <input
@@ -1006,16 +1037,16 @@
                       />
                     </div>
                   </div>
-                  <div className="text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 tabular-nums">
+                  <div className="text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2 tabular-nums">
                     {calc.backLine}
                   </div>
-                  <div className="text-xs font-bold text-gray-900 bg-white border border-gray-300 rounded px-2.5 py-1.5 tabular-nums">
+                  <div className="text-xs font-bold text-gray-900 bg-white border border-gray-300 rounded px-3 py-2 tabular-nums">
                     {calc.summaryLine}
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-1">Cutting & Tailor Instructions (Printed on Sticker)</label>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Cutting & Tailor Instructions (Printed on Sticker)</label>
                   <textarea
                     rows={2}
                     placeholder="Piping colour, joint placement, elastic/lace instructions..."
@@ -1032,7 +1063,7 @@
               <div className="space-y-3">
                 <div className="border-b border-gray-300 pb-2 flex justify-between items-center">
                   <span className="text-xs font-bold uppercase tracking-wider text-gray-700">Estimate Summary</span>
-                  <span className="text-[11px] font-semibold text-gray-500">FIXED RATE</span>
+                  <span className="text-xs font-semibold text-gray-500">FIXED RATE</span>
                 </div>
 
                 <table className="w-full text-sm tabular-nums">
@@ -1060,7 +1091,7 @@
 
                 <div className="pt-2 space-y-3 border-t border-gray-300">
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700 mb-1">Advance Received (₹)</label>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Advance Received (₹)</label>
                     <input
                       type="number"
                       className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-base font-bold text-gray-900 tabular-nums"
@@ -1069,14 +1100,14 @@
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700 mb-1">Payment Mode</label>
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Payment Mode</label>
+                    <div className="grid grid-cols-3 gap-2">
                       {['Cash', 'UPI', 'Card'].map((mode) => (
                         <button
                           type="button"
                           key={mode}
                           onClick={() => setForm({ ...form, payment_mode: mode })}
-                          className={`py-2 rounded text-xs font-semibold border ${
+                          className={`py-2.5 rounded text-xs font-semibold border min-h-[44px] ${
                             form.payment_mode === mode
                               ? 'bg-gray-900 text-white border-gray-900'
                               : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'
@@ -1096,20 +1127,20 @@
                 </div>
               </div>
 
-              <div className="space-y-2 pt-3 border-t border-gray-300">
+              <div className="space-y-2.5 pt-3 border-t border-gray-300">
                 {(!existingOrder || ['Measurement Pending', 'Estimate Given'].includes(existingOrder.status)) ? (
                   <>
                     <button
                       type="button"
                       onClick={() => finalizeSave(form.seating_segments ? 'Estimate Given' : 'Measurement Pending', 'none')}
-                      className="w-full bg-white hover:bg-gray-100 text-gray-800 border border-gray-300 py-2.5 rounded font-semibold text-sm"
+                      className="w-full bg-white hover:bg-gray-100 text-gray-800 border border-gray-300 py-3 rounded font-semibold text-sm min-h-[44px]"
                     >
                       Save as Unconfirmed Estimate
                     </button>
                     <button
                       type="button"
                       onClick={validateAndOpenReview}
-                      className="w-full bg-amber-700 hover:bg-amber-800 text-white py-3 rounded font-bold text-sm inline-flex items-center justify-center gap-2"
+                      className="w-full bg-amber-700 hover:bg-amber-800 text-white py-3 rounded font-bold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]"
                     >
                       Review & Confirm Order <Icon name="ArrowRight" size={16} />
                     </button>
@@ -1118,7 +1149,7 @@
                   <button
                     type="button"
                     onClick={() => finalizeSave(existingOrder.status, 'none')}
-                    className="w-full bg-gray-900 hover:bg-gray-800 text-white py-3 rounded font-bold text-sm"
+                    className="w-full bg-gray-900 hover:bg-gray-800 text-white py-3 rounded font-bold text-sm min-h-[44px]"
                   >
                     Save Order Changes
                   </button>
@@ -1130,43 +1161,43 @@
           {/* Final Review & Confirm Modal */}
           {reviewMode && (
             <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-              <div className="bg-white rounded-md border border-gray-300 max-w-xl w-full p-6 shadow-xl space-y-4">
+              <div className="bg-white rounded-md border border-gray-300 max-w-xl w-full p-5 md:p-6 shadow-xl space-y-4">
                 <div className="flex justify-between items-center border-b border-gray-200 pb-3">
                   <h3 className="font-bold text-lg text-gray-900">Final Review Before Confirmation</h3>
-                  <button onClick={() => setReviewMode(false)} className="text-gray-500 hover:bg-gray-100 p-1 rounded">
+                  <button onClick={() => setReviewMode(false)} className="text-gray-500 hover:bg-gray-100 p-2 rounded min-w-[44px] min-h-[44px] inline-flex items-center justify-center">
                     <Icon name="X" size={18} />
                   </button>
                 </div>
 
                 <div className="bg-gray-50 border border-gray-200 rounded p-4 space-y-2 text-sm">
-                  <div className="flex justify-between"><span className="text-gray-600">Customer:</span><strong>{form.customer_name} ({form.mobile})</strong></div>
-                  <div className="flex justify-between"><span className="text-gray-600">Design & Pieces:</span><strong>{form.design_name} — {form.total_pcs} Pcs</strong></div>
-                  <div className="flex justify-between"><span className="text-gray-600">Seating:</span><strong>{form.seating_segments} ({calc.seatingFeet} ft)</strong></div>
-                  <div className="flex justify-between"><span className="text-gray-600">Back:</span><strong>{form.back_segments} ({calc.backBillable} {form.back_unit})</strong></div>
-                  <div className="flex justify-between"><span className="text-gray-600">Promised Delivery:</span><strong>{formatDateDDMMYYYY(form.promised_date)}</strong></div>
-                  <div className="flex justify-between"><span className="text-gray-600">Salesman:</span><strong>{form.salesman_name}</strong></div>
-                  <div className="border-t border-gray-300 pt-2 flex justify-between text-base tabular-nums">
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Customer:</span><strong className="text-right">{form.customer_name} ({form.mobile})</strong></div>
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Design & Pieces:</span><strong className="text-right">{form.design_name} — {form.total_pcs} Pcs</strong></div>
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Seating:</span><strong className="text-right">{form.seating_segments} ({calc.seatingFeetStr} ft)</strong></div>
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Back:</span><strong className="text-right">{form.back_segments} ({calc.backBillableStr} {form.back_unit})</strong></div>
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Promised Delivery:</span><strong className="text-right">{formatDateDDMMYYYY(form.promised_date)}</strong></div>
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Salesman:</span><strong className="text-right">{form.salesman_name}</strong></div>
+                  <div className="border-t border-gray-300 pt-2 flex flex-wrap justify-between gap-2 text-base tabular-nums">
                     <span>Total: <strong>{formatINR(calc.total)}</strong> | Adv ({form.payment_mode}): <strong>{formatINR(form.advance_amount)}</strong></span>
                     <span className="text-red-700 font-bold">Bal: {formatINR(calc.balance)}</span>
                   </div>
                 </div>
 
-                <div className="space-y-2 pt-2">
+                <div className="space-y-2.5 pt-2">
                   <button
                     onClick={() => finalizeSave('Confirmed', 'sticker_and_wa')}
-                    className="w-full bg-amber-700 hover:bg-amber-800 text-white py-3 rounded font-bold text-sm inline-flex items-center justify-center gap-2"
+                    className="w-full bg-amber-700 hover:bg-amber-800 text-white py-3 rounded font-bold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]"
                   >
                     <Icon name="CheckCircle2" size={16} /> Confirm Order + Print Sticker + Open WhatsApp Receipt
                   </button>
                   <button
                     onClick={() => finalizeSave('Confirmed', 'sticker_only')}
-                    className="w-full bg-gray-900 hover:bg-gray-800 text-white py-2.5 rounded font-semibold text-sm inline-flex items-center justify-center gap-2"
+                    className="w-full bg-gray-900 hover:bg-gray-800 text-white py-3 rounded font-semibold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]"
                   >
                     <Icon name="Printer" size={16} /> Confirm Order + Print Sticker Only
                   </button>
                   <button
                     onClick={() => setReviewMode(false)}
-                    className="w-full bg-white hover:bg-gray-50 border border-gray-300 text-gray-700 py-2 rounded font-semibold text-xs"
+                    className="w-full bg-white hover:bg-gray-50 border border-gray-300 text-gray-700 py-2.5 rounded font-semibold text-sm min-h-[44px]"
                   >
                     Go Back & Edit
                   </button>
@@ -1185,7 +1216,6 @@
       const [selectedTailor, setSelectedTailor] = useState({});
       const [undoState, setUndoState] = useState(null);
 
-      // Sort by promised date ascending (overdue first)
       const queueOrders = useMemo(() => {
         const list = db.orders.filter((o) => {
           if (currentRole === 'cutting') return o.status === 'Cutting Pending';
@@ -1267,7 +1297,7 @@
           {undoState && (
             <div className="bg-gray-900 text-white px-4 py-3 rounded flex justify-between items-center shadow-md">
               <span className="text-sm font-medium">{undoState.label}</span>
-              <button onClick={handleUndo} className="bg-amber-600 text-white px-3 py-1.5 rounded text-xs font-bold uppercase">
+              <button onClick={handleUndo} className="bg-amber-600 text-white px-3 py-2 rounded text-xs font-bold uppercase min-h-[44px]">
                 Undo (10s)
               </button>
             </div>
@@ -1314,7 +1344,7 @@
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-lg text-gray-900">{order.order_no}</span>
                         {urgency && (
-                          <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                          <span className={`px-2 py-0.5 rounded text-xs font-bold ${
                             urgency.level === 'overdue' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-900'
                           }`}>
                             {urgency.label}
@@ -1348,7 +1378,7 @@
                             key={tKey}
                             type="button"
                             onClick={() => setSelectedTailor({ ...selectedTailor, [order.id]: tKey })}
-                            className={`py-3.5 rounded border-2 font-bold text-base ${
+                            className={`py-3.5 rounded border-2 font-bold text-base min-h-[48px] ${
                               selectedTailor[order.id] === tKey
                                 ? 'bg-gray-900 text-white border-gray-900'
                                 : 'bg-white text-gray-800 border-gray-300'
@@ -1361,7 +1391,7 @@
                       <button
                         type="button"
                         onClick={() => handleCuttingComplete(order)}
-                        className="w-full bg-amber-700 active:bg-amber-800 text-white py-4 rounded font-bold text-base"
+                        className="w-full bg-amber-700 active:bg-amber-800 text-white py-4 rounded font-bold text-base min-h-[48px]"
                       >
                         Confirm Cutting Done
                       </button>
@@ -1372,7 +1402,7 @@
                     <button
                       type="button"
                       onClick={() => handleStitchingComplete(order)}
-                      className="w-full bg-emerald-700 active:bg-emerald-800 text-white py-4 rounded font-bold text-base"
+                      className="w-full bg-emerald-700 active:bg-emerald-800 text-white py-4 rounded font-bold text-base min-h-[48px]"
                     >
                       Mark Stitching Done ({order.total_pcs} Pcs)
                     </button>
@@ -1386,7 +1416,15 @@
     }
 
     // =========================================================================
-    // ADMIN REPORTS MODULE (8 Business Reports + Date Filters + Excel/PDF/WA)
+    // ADMIN REPORTS MODULE
+    // - Desktop (>= 768px): Tabbed report view with inline filters
+    // - Mobile (< 768px): Collapsible "Filters" button + Single-column stacked sections in exact priority order:
+    //   1. Today's summary (2 stat tiles per row)
+    //   2. Pending orders (with stage visual bars + scrollable table)
+    //   3. Late orders
+    //   4. Ready/Delivery pending
+    //   5. Balance due
+    //   6. Measurement visits, Tailor report, Salesman report, Unconfirmed follow-up
     // =========================================================================
     function AdminReportsView({ db, onDownloadExcel }) {
       const todayIso = new Date().toISOString().split('T')[0];
@@ -1395,6 +1433,7 @@
       const [reportType, setReportType] = useState('day_end');
       const [fromDate, setFromDate] = useState(thirtyDaysAgoIso);
       const [toDate, setToDate] = useState(todayIso);
+      const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 
       const inRange = (isoStr) => {
         if (!isoStr) return false;
@@ -1405,7 +1444,7 @@
       const rangeOrders = db.orders.filter((o) => inRange(o.created_at));
       const confirmedRange = rangeOrders.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status));
 
-      // 1. Day-End Closing Metrics
+      // Today's summary metrics
       const todayOrders = db.orders.filter((o) => o.created_at?.startsWith(todayIso));
       const todayConfirmed = todayOrders.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status));
       const cashAdv = todayConfirmed.filter((o) => o.payment_mode === 'Cash').reduce((s, o) => s + Number(o.advance_amount), 0);
@@ -1413,18 +1452,26 @@
       const cardAdv = todayConfirmed.filter((o) => o.payment_mode === 'Card').reduce((s, o) => s + Number(o.advance_amount), 0);
       const totalTodayBalance = todayConfirmed.reduce((s, o) => s + Number(o.balance_amount), 0);
 
+      const lateOrdersList = db.orders.filter(
+        (o) => o.status !== 'Delivered' && getDueUrgency(o.promised_date, o.status)?.level === 'overdue'
+      );
+      const readyDeliveryList = db.orders.filter((o) => o.status === 'Ready');
+      const balanceDueList = db.orders.filter(
+        (o) => !['Measurement Pending', 'Estimate Given'].includes(o.status) && Number(o.balance_amount) > 0
+      );
+
       const shareDailySummaryWhatsApp = () => {
         const text =
           `*Shree Gayatri Handloom House — Sofa Cover Dept*\n` +
           `Daily Closing (${formatDateDDMMYYYY(todayIso)})\n\n` +
           `• Orders Created: ${todayOrders.length}\n` +
           `• Confirmed: ${todayConfirmed.length}\n` +
-          `• Ready: ${db.orders.filter((o) => o.status === 'Ready').length}\n` +
+          `• Ready: ${readyDeliveryList.length}\n` +
           `• Delivered Today: ${db.orders.filter((o) => o.status === 'Delivered' && o.stage_changed_at?.startsWith(todayIso)).length}\n\n` +
           `*Advance Collected Today:*\n` +
           `Cash: ${formatINR(cashAdv)} | UPI: ${formatINR(upiAdv)} | Card: ${formatINR(cardAdv)}\n` +
           `Total Advance: *${formatINR(cashAdv + upiAdv + cardAdv)}*\n` +
-          `Total Pending Customer Dues: *${formatINR(db.orders.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status)).reduce((s, o) => s + Number(o.balance_amount), 0))}*`;
+          `Total Pending Customer Dues: *${formatINR(balanceDueList.reduce((s, o) => s + Number(o.balance_amount), 0))}*`;
         window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
       };
 
@@ -1439,10 +1486,56 @@
         { id: 'dues', label: '8. Customer Dues' }
       ];
 
+      const pendingStages = ['Measurement Pending', 'Estimate Given', 'Cutting Pending', 'With Tailor', 'Silai Done', 'Ready'];
+      const maxStageCount = Math.max(1, ...pendingStages.map((st) => db.orders.filter((o) => o.status === st).length));
+
       return (
         <div className="space-y-4">
-          {/* Filter & Export Header */}
-          <div className="bg-white border border-gray-300 rounded p-4 flex flex-wrap justify-between items-center gap-3 no-print">
+          {/* Mobile Collapsible "Filters" Button Bar (< 768px) */}
+          <div className="md:hidden bg-white border border-gray-300 rounded p-3 space-y-3 no-print">
+            <div className="flex justify-between items-center gap-2">
+              <div className="text-sm font-bold text-gray-900">
+                Reports ({formatDateDDMMYYYY(fromDate)} – {formatDateDDMMYYYY(toDate)})
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileFiltersOpen((v) => !v)}
+                className="px-3.5 py-2 bg-gray-900 text-white rounded text-sm font-semibold inline-flex items-center gap-2 min-h-[44px]"
+              >
+                <Icon name="SlidersHorizontal" size={16} />
+                <span>Filters</span>
+              </button>
+            </div>
+
+            {mobileFiltersOpen && (
+              <div className="pt-3 border-t border-gray-200 space-y-3">
+                <div className="grid grid-cols-1 gap-2.5">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1 mobile-label">From Date</label>
+                    <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="w-full border border-gray-300 rounded px-3 py-2 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1 mobile-label">To Date</label>
+                    <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="w-full border border-gray-300 rounded px-3 py-2 text-sm" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  <button onClick={shareDailySummaryWhatsApp} className="w-full py-2.5 bg-emerald-700 text-white rounded text-sm font-semibold inline-flex items-center justify-center gap-2 min-h-[44px]">
+                    <Icon name="Share2" size={16} /> Share Daily Summary (WhatsApp)
+                  </button>
+                  <button onClick={onDownloadExcel} className="w-full py-2.5 bg-gray-900 text-white rounded text-sm font-semibold inline-flex items-center justify-center gap-2 min-h-[44px]">
+                    <Icon name="Download" size={16} /> Export Excel (.xlsx)
+                  </button>
+                  <button onClick={() => window.print()} className="w-full py-2.5 bg-white border border-gray-300 text-gray-800 rounded text-sm font-semibold inline-flex items-center justify-center gap-2 min-h-[44px]">
+                    <Icon name="Printer" size={16} /> Print / PDF
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Desktop Filter & Export Header (>= 768px) */}
+          <div className="hidden md:flex bg-white border border-gray-300 rounded p-4 flex-wrap justify-between items-center gap-3 no-print">
             <div className="flex flex-wrap items-center gap-2">
               <label className="text-xs font-bold text-gray-600">From:</label>
               <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="border border-gray-300 rounded px-2.5 py-1.5 text-xs font-medium" />
@@ -1462,8 +1555,8 @@
             </div>
           </div>
 
-          {/* Report Selector Bar */}
-          <div className="flex flex-wrap gap-1.5 no-print">
+          {/* Desktop Report Selector Bar (>= 768px) */}
+          <div className="hidden md:flex flex-wrap gap-1.5 no-print">
             {REPORT_TABS.map((rt) => (
               <button
                 key={rt.id}
@@ -1479,7 +1572,318 @@
             ))}
           </div>
 
-          <div id="printable-area" className="bg-white border border-gray-300 rounded p-5 space-y-5">
+          {/* =============================================================== */}
+          {/* MOBILE SINGLE-COLUMN ORDERED REPORTS (< 768px)                  */}
+          {/* Order: 1. Today's summary -> 2. Pending orders -> 3. Late       */}
+          {/* -> 4. Ready/Delivery pending -> 5. Balance due -> Rest          */}
+          {/* =============================================================== */}
+          <div className="md:hidden space-y-4">
+            {/* 1. Today's Summary (Stat tiles 2 per row) */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <h3 className="font-bold text-base text-gray-900 border-b border-gray-200 pb-2">1. Today's Summary</h3>
+              <div className="grid grid-cols-2 gap-3 tabular-nums">
+                <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                  <div className="text-xs text-gray-600 font-semibold">Orders Today</div>
+                  <div className="text-lg font-bold text-gray-900 mt-1">{todayOrders.length} ({todayConfirmed.length} Conf.)</div>
+                </div>
+                <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                  <div className="text-xs text-gray-600 font-semibold">Ready / Delivered</div>
+                  <div className="text-lg font-bold text-gray-900 mt-1">{readyDeliveryList.length} / {db.orders.filter((o) => o.status === 'Delivered').length}</div>
+                </div>
+                <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                  <div className="text-xs text-gray-600 font-semibold">Advance Today</div>
+                  <div className="text-lg font-bold text-emerald-700 mt-1">{formatINR(cashAdv + upiAdv + cardAdv)}</div>
+                </div>
+                <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                  <div className="text-xs text-gray-600 font-semibold">Today Balance</div>
+                  <div className="text-lg font-bold text-red-700 mt-1">{formatINR(totalTodayBalance)}</div>
+                </div>
+              </div>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[420px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Mode</th>
+                      <th className="p-2.5 text-right border-b">Orders</th>
+                      <th className="p-2.5 text-right border-b">Today Adv.</th>
+                      <th className="p-2.5 text-right border-b">Period Adv.</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {['Cash', 'UPI', 'Card'].map((mode) => (
+                      <tr key={mode}>
+                        <td className="p-2.5 font-semibold">{mode}</td>
+                        <td className="p-2.5 text-right">{todayConfirmed.filter((o) => o.payment_mode === mode).length}</td>
+                        <td className="p-2.5 text-right font-bold">{formatINR(todayConfirmed.filter((o) => o.payment_mode === mode).reduce((s, o) => s + Number(o.advance_amount), 0))}</td>
+                        <td className="p-2.5 text-right">{formatINR(confirmedRange.filter((o) => o.payment_mode === mode).reduce((s, o) => s + Number(o.advance_amount), 0))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 2. Pending Orders by Stage (Full-width chart bars + scrollable table) */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <h3 className="font-bold text-base text-gray-900 border-b border-gray-200 pb-2">2. Pending Orders & Stage Aging</h3>
+              {/* Full-width stage distribution chart */}
+              <div className="space-y-2 w-full">
+                {pendingStages.map((st) => {
+                  const count = db.orders.filter((o) => o.status === st).length;
+                  const pct = Math.round((count / maxStageCount) * 100);
+                  return (
+                    <div key={st} className="w-full space-y-1">
+                      <div className="flex justify-between text-xs font-semibold text-gray-700">
+                        <span>{st}</span>
+                        <span className="tabular-nums">{count}</span>
+                      </div>
+                      <div className="w-full bg-gray-100 h-2.5 rounded overflow-hidden">
+                        <div className="bg-amber-700 h-full rounded" style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[460px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Stage</th>
+                      <th className="p-2.5 text-right border-b">Pending</th>
+                      <th className="p-2.5 text-right border-b">Avg Age</th>
+                      <th className="p-2.5 text-right border-b">Stuck</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {pendingStages.map((st) => {
+                      const list = db.orders.filter((o) => o.status === st);
+                      const avgDays = list.length ? (list.reduce((s, o) => s + getHoursInStage(o) / 24, 0) / list.length).toFixed(1) : '0.0';
+                      const limit = db.settings?.stageAlertHours?.[st] || 48;
+                      const stuck = list.filter((o) => getHoursInStage(o) > limit).length;
+                      return (
+                        <tr key={st}>
+                          <td className="p-2.5"><StatusChip status={st} /></td>
+                          <td className="p-2.5 text-right font-bold">{list.length}</td>
+                          <td className="p-2.5 text-right">{avgDays}d</td>
+                          <td className="p-2.5 text-right font-bold text-red-700">{stuck}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 3. Late Orders */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <div className="flex justify-between items-center border-b border-gray-200 pb-2">
+                <h3 className="font-bold text-base text-gray-900">3. Late Orders</h3>
+                <span className="px-2 py-0.5 bg-red-100 text-red-800 rounded text-xs font-bold tabular-nums">{lateOrdersList.length}</span>
+              </div>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[500px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Order</th>
+                      <th className="p-2.5 text-left border-b">Customer</th>
+                      <th className="p-2.5 text-left border-b">Stage</th>
+                      <th className="p-2.5 text-left border-b">Due Date</th>
+                      <th className="p-2.5 text-right border-b">Balance</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {lateOrdersList.length === 0 ? (
+                      <tr><td colSpan={5} className="p-4 text-center text-gray-500">No overdue orders.</td></tr>
+                    ) : (
+                      lateOrdersList.map((o) => (
+                        <tr key={o.id}>
+                          <td className="p-2.5 font-bold">{o.order_no}</td>
+                          <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
+                          <td className="p-2.5"><StatusChip status={o.status} /></td>
+                          <td className="p-2.5 text-red-700 font-bold">{formatDateDDMMYYYY(o.promised_date)}</td>
+                          <td className="p-2.5 text-right font-bold">{formatINR(o.balance_amount)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 4. Ready / Delivery Pending */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <div className="flex justify-between items-center border-b border-gray-200 pb-2">
+                <h3 className="font-bold text-base text-gray-900">4. Ready / Delivery Pending</h3>
+                <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded text-xs font-bold tabular-nums">{readyDeliveryList.length}</span>
+              </div>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[480px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Order</th>
+                      <th className="p-2.5 text-left border-b">Customer</th>
+                      <th className="p-2.5 text-left border-b">Design</th>
+                      <th className="p-2.5 text-right border-b">Balance Due</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {readyDeliveryList.length === 0 ? (
+                      <tr><td colSpan={4} className="p-4 text-center text-gray-500">No orders waiting in Ready state.</td></tr>
+                    ) : (
+                      readyDeliveryList.map((o) => (
+                        <tr key={o.id}>
+                          <td className="p-2.5 font-bold">{o.order_no}</td>
+                          <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
+                          <td className="p-2.5">{o.design_name}</td>
+                          <td className="p-2.5 text-right font-bold text-red-700">{formatINR(o.balance_amount)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 5. Balance Due (Customer Dues) */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <div className="flex justify-between items-center border-b border-gray-200 pb-2">
+                <h3 className="font-bold text-base text-gray-900">5. Balance Due (Customer Dues)</h3>
+                <span className="text-sm font-bold text-red-700 tabular-nums">
+                  {formatINR(balanceDueList.reduce((s, o) => s + Number(o.balance_amount), 0))}
+                </span>
+              </div>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[500px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Order</th>
+                      <th className="p-2.5 text-left border-b">Customer</th>
+                      <th className="p-2.5 text-left border-b">Status</th>
+                      <th className="p-2.5 text-right border-b">Total</th>
+                      <th className="p-2.5 text-right border-b">Balance</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {balanceDueList.map((o) => (
+                      <tr key={o.id}>
+                        <td className="p-2.5 font-bold">{o.order_no}</td>
+                        <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
+                        <td className="p-2.5"><StatusChip status={o.status} /></td>
+                        <td className="p-2.5 text-right">{formatINR(o.estimate_total)}</td>
+                        <td className="p-2.5 text-right font-bold text-red-700">{formatINR(o.balance_amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 6. Tailor Report */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <h3 className="font-bold text-base text-gray-900 border-b border-gray-200 pb-2">6. Tailor Piece & Earnings</h3>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[440px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Tailor</th>
+                      <th className="p-2.5 text-right border-b">Today</th>
+                      <th className="p-2.5 text-right border-b">Period Pcs</th>
+                      <th className="p-2.5 text-right border-b">Rate</th>
+                      <th className="p-2.5 text-right border-b">Earning</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {['tailor_1', 'tailor_2'].map((tRole) => {
+                      const logs = db.pieceLogs.filter((l) => l.tailor_role === tRole && inRange(l.logged_at));
+                      const todayPcs = db.pieceLogs.filter((l) => l.tailor_role === tRole && l.logged_at?.startsWith(todayIso)).reduce((s, l) => s + Number(l.pcs_count), 0);
+                      const periodPcs = logs.reduce((s, l) => s + Number(l.pcs_count), 0);
+                      const earning = logs.reduce((s, l) => s + Number(l.pcs_count) * Number(l.rate_at_time || 150), 0);
+                      return (
+                        <tr key={tRole}>
+                          <td className="p-2.5 font-bold">{tRole === 'tailor_1' ? 'Tailor 1' : 'Tailor 2'}</td>
+                          <td className="p-2.5 text-right">{todayPcs}</td>
+                          <td className="p-2.5 text-right font-bold">{periodPcs}</td>
+                          <td className="p-2.5 text-right">{formatINR(db.settings?.tailorRates?.[tRole] || 150)}</td>
+                          <td className="p-2.5 text-right font-bold text-emerald-700">{formatINR(earning)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 7. Salesman Conversion Report */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <h3 className="font-bold text-base text-gray-900 border-b border-gray-200 pb-2">7. Salesman Conversion</h3>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[460px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Salesman</th>
+                      <th className="p-2.5 text-right border-b">Enquiries</th>
+                      <th className="p-2.5 text-right border-b">Confirmed</th>
+                      <th className="p-2.5 text-right border-b">Conv %</th>
+                      <th className="p-2.5 text-right border-b">Sales Value</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {db.salesmen.map((sm) => {
+                      const smAll = rangeOrders.filter((o) => o.salesman_name === sm);
+                      const smConf = smAll.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status));
+                      const conv = smAll.length ? Math.round((smConf.length / smAll.length) * 100) : 0;
+                      const val = smConf.reduce((s, o) => s + Number(o.estimate_total), 0);
+                      return (
+                        <tr key={sm}>
+                          <td className="p-2.5 font-bold">{sm}</td>
+                          <td className="p-2.5 text-right">{smAll.length}</td>
+                          <td className="p-2.5 text-right font-semibold">{smConf.length}</td>
+                          <td className="p-2.5 text-right font-bold text-amber-800">{conv}%</td>
+                          <td className="p-2.5 text-right font-bold text-emerald-700">{formatINR(val)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 8. Measurement Visits & Unconfirmed Follow-Up */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <h3 className="font-bold text-base text-gray-900 border-b border-gray-200 pb-2">8. Unconfirmed Estimates Follow-Up</h3>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[480px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Order</th>
+                      <th className="p-2.5 text-left border-b">Customer</th>
+                      <th className="p-2.5 text-right border-b">Estimate</th>
+                      <th className="p-2.5 text-right border-b">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {db.orders.filter((o) => ['Measurement Pending', 'Estimate Given'].includes(o.status)).map((o) => (
+                      <tr key={o.id}>
+                        <td className="p-2.5 font-bold">{o.order_no}</td>
+                        <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
+                        <td className="p-2.5 text-right font-bold">{formatINR(o.estimate_total)}</td>
+                        <td className="p-2.5 text-right">
+                          <a href={WhatsAppService.getLink('followup', o)} target="_blank" rel="noreferrer" className="inline-flex items-center px-3 py-1.5 bg-emerald-700 text-white rounded text-xs font-semibold min-h-[36px]">
+                            Follow-Up WA
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          {/* =============================================================== */}
+          {/* DESKTOP TABBED REPORT VIEW (>= 768px — kept identical)          */}
+          {/* =============================================================== */}
+          <div id="printable-area" className="hidden md:block bg-white border border-gray-300 rounded p-5 space-y-5">
             <div className="border-b border-gray-200 pb-3 flex justify-between items-center">
               <div>
                 <h3 className="font-bold text-base text-gray-900">
@@ -1491,7 +1895,6 @@
               </div>
             </div>
 
-            {/* 1. DAY-END CLOSING */}
             {reportType === 'day_end' && (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 tabular-nums">
@@ -1538,7 +1941,6 @@
               </div>
             )}
 
-            {/* 2. STAGE AGING & BOTTLENECKS */}
             {reportType === 'aging' && (
               <div className="space-y-4">
                 <table className="w-full text-sm border border-gray-200 tabular-nums">
@@ -1551,7 +1953,7 @@
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {['Measurement Pending', 'Estimate Given', 'Cutting Pending', 'With Tailor', 'Silai Done', 'Ready'].map((st) => {
+                    {pendingStages.map((st) => {
                       const list = db.orders.filter((o) => o.status === st);
                       const avgDays = list.length ? (list.reduce((s, o) => s + getHoursInStage(o) / 24, 0) / list.length).toFixed(1) : '0.0';
                       const limit = db.settings?.stageAlertHours?.[st] || 48;
@@ -1570,7 +1972,6 @@
               </div>
             )}
 
-            {/* 3. LATE & DELIVERY PENDING */}
             {reportType === 'late_delivery' && (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm border border-gray-200 tabular-nums">
@@ -1605,7 +2006,6 @@
               </div>
             )}
 
-            {/* 4. MEASUREMENT VISITS */}
             {reportType === 'visits' && (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm border border-gray-200 tabular-nums">
@@ -1635,7 +2035,6 @@
               </div>
             )}
 
-            {/* 5. TAILOR PIECE & EARNINGS */}
             {reportType === 'tailors' && (
               <div className="space-y-4">
                 <table className="w-full text-sm border border-gray-200 tabular-nums">
@@ -1669,7 +2068,6 @@
               </div>
             )}
 
-            {/* 6. SALESMAN CONVERSION REPORT */}
             {reportType === 'salesmen' && (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm border border-gray-200 tabular-nums">
@@ -1703,7 +2101,6 @@
               </div>
             )}
 
-            {/* 7. UNCONFIRMED ESTIMATES FOLLOW-UP */}
             {reportType === 'unconfirmed' && (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm border border-gray-200 tabular-nums">
@@ -1737,7 +2134,6 @@
               </div>
             )}
 
-            {/* 8. CUSTOMER DUES */}
             {reportType === 'dues' && (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm border border-gray-200 tabular-nums">
@@ -1752,18 +2148,16 @@
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {db.orders
-                      .filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status) && Number(o.balance_amount) > 0)
-                      .map((o) => (
-                        <tr key={o.id}>
-                          <td className="p-2.5 font-bold">{o.order_no}</td>
-                          <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
-                          <td className="p-2.5"><StatusChip status={o.status} /></td>
-                          <td className="p-2.5 text-right">{formatINR(o.estimate_total)}</td>
-                          <td className="p-2.5 text-right">{formatINR(o.advance_amount)}</td>
-                          <td className="p-2.5 text-right font-bold text-red-700">{formatINR(o.balance_amount)}</td>
-                        </tr>
-                      ))}
+                    {balanceDueList.map((o) => (
+                      <tr key={o.id}>
+                        <td className="p-2.5 font-bold">{o.order_no}</td>
+                        <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
+                        <td className="p-2.5"><StatusChip status={o.status} /></td>
+                        <td className="p-2.5 text-right">{formatINR(o.estimate_total)}</td>
+                        <td className="p-2.5 text-right">{formatINR(o.advance_amount)}</td>
+                        <td className="p-2.5 text-right font-bold text-red-700">{formatINR(o.balance_amount)}</td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -1774,7 +2168,10 @@
     }
 
     // =========================================================================
-    // DESKTOP ERP SHELL (Counter & Admin: Left Sidebar, Dense Tables, Ctrl+K)
+    // DESKTOP & RESPONSIVE MOBILE ERP SHELL
+    // - Above 768px: exact left sidebar + dense table
+    // - Below 768px: slide-in drawer from hamburger, compact header (logo + short title + search icon),
+    //   Install App & Logout inside drawer, and card-based orders list
     // =========================================================================
     function DesktopERPView({ db, saveDb, currentRole, savedKey, onLogout, triggerInstall, syncStatus }) {
       const isAdmin = currentRole === 'admin';
@@ -1782,6 +2179,7 @@
       const [queueFilter, setQueueFilter] = useState('ALL'); // ALL | READY_DELIVERY | BALANCE_DUE | STUCK | UNCONFIRMED
       const [searchQuery, setSearchQuery] = useState('');
       const [selectedIds, setSelectedIds] = useState([]);
+      const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
 
       const [editingOrder, setEditingOrder] = useState(null);
       const [stickerBatch, setStickerBatch] = useState(null);
@@ -1807,11 +2205,18 @@
             setGlobalSearchTerm('');
           } else if (e.key === 'Escape') {
             setGlobalSearchOpen(false);
+            setMobileDrawerOpen(false);
           }
         };
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
       }, []);
+
+      const selectPage = (nav, filter = null) => {
+        setActiveNav(nav);
+        if (filter !== null) setQueueFilter(filter);
+        setMobileDrawerOpen(false);
+      };
 
       const triggerUndoableChange = (prevDb, nextDb, label) => {
         saveDb(nextDb);
@@ -1973,15 +2378,162 @@
 
       const staffMagicLink = `${window.location.origin}${window.location.pathname}?setup_key=${encodeURIComponent(savedKey)}`;
 
+      // Shared Sidebar Menu Content (used in desktop static sidebar and mobile slide-in drawer)
+      const renderSidebarContent = (isMobileDrawer = false) => (
+        <>
+          <div className="space-y-1.5">
+            {isMobileDrawer && (
+              <div className="flex justify-between items-center pb-3 mb-2 border-b border-gray-200">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded bg-amber-600 text-white font-bold text-xs flex items-center justify-center">SG</div>
+                  <div>
+                    <div className="font-bold text-sm text-gray-900">Shree Gayatri</div>
+                    <div className="text-xs text-gray-500 uppercase">{currentRole.replace('_', ' ')} • {syncStatus}</div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setMobileDrawerOpen(false)}
+                  className="p-2 min-w-[44px] min-h-[44px] text-gray-500 hover:bg-gray-100 rounded inline-flex items-center justify-center"
+                >
+                  <Icon name="X" size={20} />
+                </button>
+              </div>
+            )}
+
+            <button
+              onClick={() => { setEditingOrder(null); selectPage('new_order'); }}
+              className="w-full mb-3 bg-amber-700 hover:bg-amber-800 text-white py-2.5 px-3 rounded font-bold text-sm inline-flex items-center justify-center gap-2 shadow-sm min-h-[44px]"
+            >
+              <Icon name="Plus" size={16} /> New Order / Estimate
+            </button>
+
+            <button
+              onClick={() => selectPage('orders', 'ALL')}
+              className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                activeNav === 'orders' && queueFilter === 'ALL' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              <span className="inline-flex items-center gap-2.5"><Icon name="ListOrdered" size={16} /> All Orders</span>
+              <span className="text-xs opacity-80 tabular-nums">{db.orders.length}</span>
+            </button>
+
+            <button
+              onClick={() => selectPage('orders', 'READY_DELIVERY')}
+              className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                activeNav === 'orders' && queueFilter === 'READY_DELIVERY' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              <span className="inline-flex items-center gap-2.5"><Icon name="PackageCheck" size={16} /> Ready for Delivery</span>
+              <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 tabular-nums">{readyForDeliveryCount}</span>
+            </button>
+
+            <button
+              onClick={() => selectPage('orders', 'BALANCE_DUE')}
+              className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                activeNav === 'orders' && queueFilter === 'BALANCE_DUE' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              <span className="inline-flex items-center gap-2.5"><Icon name="IndianRupee" size={16} /> Balance Due</span>
+              <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-800 tabular-nums">{balanceDueCount}</span>
+            </button>
+
+            <button
+              onClick={() => selectPage('orders', 'UNCONFIRMED')}
+              className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                activeNav === 'orders' && queueFilter === 'UNCONFIRMED' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              <span className="inline-flex items-center gap-2.5"><Icon name="Clock" size={16} /> Unconfirmed</span>
+              <span className="text-xs opacity-80 tabular-nums">{unconfirmedCount}</span>
+            </button>
+
+            {stuckOrdersList.length > 0 && (
+              <button
+                onClick={() => selectPage('orders', 'STUCK')}
+                className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                  activeNav === 'orders' && queueFilter === 'STUCK' ? 'bg-red-800 text-white' : 'bg-red-50 text-red-800 hover:bg-red-100'
+                }`}
+              >
+                <span className="inline-flex items-center gap-2.5"><Icon name="AlertTriangle" size={16} /> Stuck Alerts</span>
+                <span className="text-xs font-bold tabular-nums">{stuckOrdersList.length}</span>
+              </button>
+            )}
+
+            {isAdmin && (
+              <div className="pt-3 mt-3 border-t border-gray-200 space-y-1.5">
+                <div className="px-3 text-xs font-bold uppercase tracking-wider text-gray-400">Admin Controls</div>
+                <button
+                  onClick={() => selectPage('reports')}
+                  className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex items-center gap-2.5 min-h-[44px] md:min-h-0 ${
+                    activeNav === 'reports' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  <Icon name="BarChart3" size={16} /> Reports & Analytics
+                </button>
+                <button
+                  onClick={() => selectPage('settings')}
+                  className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex items-center gap-2.5 min-h-[44px] md:min-h-0 ${
+                    activeNav === 'settings' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  <Icon name="Settings" size={16} /> Shop Settings & Data
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="pt-3 border-t border-gray-200 space-y-2">
+            {/* Mobile-only Install App & Logout inside Drawer */}
+            {isMobileDrawer && (
+              <div className="space-y-2 pb-2 border-b border-gray-200">
+                <button
+                  onClick={() => { setMobileDrawerOpen(false); triggerInstall(); }}
+                  className="w-full px-3 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded text-sm font-semibold flex items-center gap-2.5 min-h-[44px]"
+                >
+                  <Icon name="Download" size={16} /> Install App
+                </button>
+                <button
+                  onClick={() => { setMobileDrawerOpen(false); onLogout(); }}
+                  className="w-full px-3 py-2.5 bg-red-50 hover:bg-red-100 text-red-700 rounded text-sm font-semibold flex items-center gap-2.5 min-h-[44px]"
+                >
+                  <Icon name="LogOut" size={16} /> Logout
+                </button>
+              </div>
+            )}
+            <div className="text-xs text-gray-500 px-2 space-y-0.5">
+              <div>Fixed Rate Policy Active</div>
+              <div>Round-up: 0.25 ft increments</div>
+            </div>
+          </div>
+        </>
+      );
+
       return (
-        <div className="min-h-screen flex flex-col">
+        <div className="min-h-screen flex flex-col w-full max-w-full overflow-x-hidden">
           {/* Top Application Header */}
-          <header className="bg-gray-900 text-white px-4 h-13 py-2.5 flex justify-between items-center border-b border-gray-800 sticky top-0 z-30 no-print">
-            <div className="flex items-center gap-3">
-              <div className="w-7 h-7 rounded bg-amber-600 text-white font-bold text-xs flex items-center justify-center">SG</div>
-              <div>
-                <div className="font-bold text-sm leading-tight">Shree Gayatri Handloom House — Sofa Cover Dept</div>
-                <div className="text-[11px] text-gray-400 flex items-center gap-2">
+          {/* Mobile (<768px): Hamburger + Logo + Short Title + Search Icon ONLY */}
+          {/* Desktop (>=768px): Full title + Quick Search Ctrl+K + Install App + Logout */}
+          <header className="bg-gray-900 text-white px-3 md:px-4 py-2 flex justify-between items-center border-b border-gray-800 sticky top-0 z-30 no-print">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <button
+                type="button"
+                aria-label="Open navigation menu"
+                onClick={() => setMobileDrawerOpen(true)}
+                className="md:hidden p-2 -ml-1 min-w-[44px] min-h-[44px] rounded text-gray-200 hover:bg-gray-800 inline-flex items-center justify-center shrink-0"
+              >
+                <Icon name="Menu" size={22} />
+              </button>
+              <div className="w-8 h-8 md:w-7 md:h-7 rounded bg-amber-600 text-white font-bold text-xs flex items-center justify-center shrink-0">
+                SG
+              </div>
+              <div className="min-w-0">
+                <div className="font-bold text-sm leading-tight truncate md:hidden">
+                  Shree Gayatri — Sofa ERP
+                </div>
+                <div className="font-bold text-sm leading-tight hidden md:block">
+                  Shree Gayatri Handloom House — Sofa Cover Dept
+                </div>
+                <div className="text-xs text-gray-400 flex items-center gap-1.5 truncate">
                   <span>Role: <strong className="text-gray-200 uppercase">{currentRole.replace('_', ' ')}</strong></span>
                   <span>•</span>
                   <span className="text-emerald-400">{syncStatus}</span>
@@ -1989,122 +2541,60 @@
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Mobile Search Icon Button Only */}
+              <button
+                type="button"
+                aria-label="Quick Search"
+                onClick={() => { setGlobalSearchOpen(true); setGlobalSearchTerm(''); }}
+                className="md:hidden p-2 min-w-[44px] min-h-[44px] bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 rounded inline-flex items-center justify-center"
+              >
+                <Icon name="Search" size={18} />
+              </button>
+
+              {/* Desktop Header Buttons (Hidden on mobile < 768px) */}
               <button
                 onClick={() => { setGlobalSearchOpen(true); setGlobalSearchTerm(''); }}
-                className="bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 px-3 py-1.5 rounded text-xs inline-flex items-center gap-2"
+                className="hidden md:inline-flex bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 px-3 py-1.5 rounded text-xs items-center gap-2"
               >
                 <Icon name="Search" size={14} />
                 <span>Quick Search</span>
                 <kbd className="bg-gray-900 px-1.5 py-0.5 rounded text-[10px] text-gray-400">Ctrl+K</kbd>
               </button>
-              <button onClick={triggerInstall} className="bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 px-2.5 py-1.5 rounded text-xs font-medium inline-flex items-center gap-1">
+              <button onClick={triggerInstall} className="hidden md:inline-flex bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 px-2.5 py-1.5 rounded text-xs font-medium items-center gap-1">
                 <Icon name="Download" size={14} /> Install App
               </button>
-              <button onClick={onLogout} className="bg-gray-800 hover:bg-red-900/60 text-gray-200 border border-gray-700 px-2.5 py-1.5 rounded text-xs font-medium inline-flex items-center gap-1">
+              <button onClick={onLogout} className="hidden md:inline-flex bg-gray-800 hover:bg-red-900/60 text-gray-200 border border-gray-700 px-2.5 py-1.5 rounded text-xs font-medium items-center gap-1">
                 <Icon name="LogOut" size={14} /> Logout
               </button>
             </div>
           </header>
 
-          <div className="flex-1 flex">
-            {/* Left Sidebar Navigation (Zoho/Tally Clean) */}
-            <aside className="w-56 bg-white border-r border-gray-300 p-3 flex flex-col justify-between shrink-0 no-print">
-              <div className="space-y-1">
-                <button
-                  onClick={() => { setEditingOrder(null); setActiveNav('new_order'); }}
-                  className="w-full mb-3 bg-amber-700 hover:bg-amber-800 text-white py-2.5 px-3 rounded font-bold text-sm inline-flex items-center justify-center gap-2 shadow-sm"
-                >
-                  <Icon name="Plus" size={16} /> New Order / Estimate
-                </button>
+          {/* Mobile Slide-In Navigation Drawer (< 768px) */}
+          {mobileDrawerOpen && (
+            <div className="fixed inset-0 z-50 md:hidden flex no-print">
+              <div
+                className="fixed inset-0 bg-black/50"
+                onClick={() => setMobileDrawerOpen(false)}
+              />
+              <aside className="relative w-72 max-w-[82vw] bg-white h-full p-4 flex flex-col justify-between shadow-2xl z-10 overflow-y-auto">
+                {renderSidebarContent(true)}
+              </aside>
+            </div>
+          )}
 
-                <button
-                  onClick={() => { setActiveNav('orders'); setQueueFilter('ALL'); }}
-                  className={`w-full text-left px-3 py-2 rounded text-sm font-medium flex justify-between items-center ${
-                    activeNav === 'orders' && queueFilter === 'ALL' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                >
-                  <span className="inline-flex items-center gap-2"><Icon name="ListOrdered" size={16} /> All Orders</span>
-                  <span className="text-xs opacity-80 tabular-nums">{db.orders.length}</span>
-                </button>
-
-                <button
-                  onClick={() => { setActiveNav('orders'); setQueueFilter('READY_DELIVERY'); }}
-                  className={`w-full text-left px-3 py-2 rounded text-sm font-medium flex justify-between items-center ${
-                    activeNav === 'orders' && queueFilter === 'READY_DELIVERY' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                >
-                  <span className="inline-flex items-center gap-2"><Icon name="PackageCheck" size={16} /> Ready for Delivery</span>
-                  <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 tabular-nums">{readyForDeliveryCount}</span>
-                </button>
-
-                <button
-                  onClick={() => { setActiveNav('orders'); setQueueFilter('BALANCE_DUE'); }}
-                  className={`w-full text-left px-3 py-2 rounded text-sm font-medium flex justify-between items-center ${
-                    activeNav === 'orders' && queueFilter === 'BALANCE_DUE' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                >
-                  <span className="inline-flex items-center gap-2"><Icon name="IndianRupee" size={16} /> Balance Due</span>
-                  <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-800 tabular-nums">{balanceDueCount}</span>
-                </button>
-
-                <button
-                  onClick={() => { setActiveNav('orders'); setQueueFilter('UNCONFIRMED'); }}
-                  className={`w-full text-left px-3 py-2 rounded text-sm font-medium flex justify-between items-center ${
-                    activeNav === 'orders' && queueFilter === 'UNCONFIRMED' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                >
-                  <span className="inline-flex items-center gap-2"><Icon name="Clock" size={16} /> Unconfirmed</span>
-                  <span className="text-xs opacity-80 tabular-nums">{unconfirmedCount}</span>
-                </button>
-
-                {stuckOrdersList.length > 0 && (
-                  <button
-                    onClick={() => { setActiveNav('orders'); setQueueFilter('STUCK'); }}
-                    className={`w-full text-left px-3 py-2 rounded text-sm font-medium flex justify-between items-center ${
-                      activeNav === 'orders' && queueFilter === 'STUCK' ? 'bg-red-800 text-white' : 'bg-red-50 text-red-800 hover:bg-red-100'
-                    }`}
-                  >
-                    <span className="inline-flex items-center gap-2"><Icon name="AlertTriangle" size={16} /> Stuck Alerts</span>
-                    <span className="text-xs font-bold tabular-nums">{stuckOrdersList.length}</span>
-                  </button>
-                )}
-
-                {isAdmin && (
-                  <div className="pt-3 mt-3 border-t border-gray-200 space-y-1">
-                    <div className="px-3 text-[11px] font-bold uppercase tracking-wider text-gray-400">Admin Controls</div>
-                    <button
-                      onClick={() => setActiveNav('reports')}
-                      className={`w-full text-left px-3 py-2 rounded text-sm font-medium flex items-center gap-2 ${
-                        activeNav === 'reports' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
-                      }`}
-                    >
-                      <Icon name="BarChart3" size={16} /> Reports & Analytics
-                    </button>
-                    <button
-                      onClick={() => setActiveNav('settings')}
-                      className={`w-full text-left px-3 py-2 rounded text-sm font-medium flex items-center gap-2 ${
-                        activeNav === 'settings' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
-                      }`}
-                    >
-                      <Icon name="Settings" size={16} /> Shop Settings & Data
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              <div className="pt-3 border-t border-gray-200 text-[11px] text-gray-500 px-2 space-y-1">
-                <div>Fixed Rate Policy Active</div>
-                <div>Round-up: 0.25 ft increments</div>
-              </div>
+          <div className="flex-1 flex w-full max-w-full overflow-x-hidden">
+            {/* Desktop Left Sidebar Navigation (Hidden below 768px, visible >= 768px) */}
+            <aside className="hidden md:flex w-56 bg-white border-r border-gray-300 p-3 flex-col justify-between shrink-0 no-print">
+              {renderSidebarContent(false)}
             </aside>
 
             {/* Main Content Area */}
-            <main className="flex-1 p-4 md:p-5 overflow-x-auto">
+            <main className="flex-1 min-w-0 p-3 md:p-5">
               {undoState && (
                 <div className="mb-4 bg-gray-900 text-white px-4 py-2.5 rounded flex justify-between items-center shadow-sm no-print">
                   <span className="text-sm">{undoState.label}</span>
-                  <button onClick={handleUndo} className="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1 rounded text-xs font-bold">
+                  <button onClick={handleUndo} className="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded text-xs font-bold min-h-[38px]">
                     Undo (10s)
                   </button>
                 </div>
@@ -2124,19 +2614,19 @@
               {activeNav === 'orders' && (
                 <div className="bg-white border border-gray-300 rounded shadow-sm">
                   {/* Filters & Batch Actions Bar */}
-                  <div className="p-3.5 border-b border-gray-200 flex flex-wrap justify-between items-center gap-3 bg-gray-50">
-                    <div className="flex flex-wrap items-center gap-2 flex-1">
-                      <div className="relative w-72">
-                        <span className="absolute left-2.5 top-2.5 text-gray-400"><Icon name="Search" size={15} /></span>
+                  <div className="p-3 md:p-3.5 border-b border-gray-200 flex flex-col md:flex-row justify-between items-stretch md:items-center gap-2.5 bg-gray-50">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1">
+                      <div className="relative flex-1 md:max-w-xs">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"><Icon name="Search" size={16} /></span>
                         <input
                           placeholder="Filter by Order No, Name, Mobile..."
-                          className="w-full pl-8 pr-3 py-1.5 border border-gray-300 bg-white rounded text-sm focus:border-amber-600 focus:outline-none"
+                          className="w-full pl-9 pr-3 py-2 border border-gray-300 bg-white rounded text-sm focus:border-amber-600 focus:outline-none"
                           value={searchQuery}
                           onChange={(e) => setSearchQuery(e.target.value)}
                         />
                       </div>
                       <select
-                        className="border border-gray-300 bg-white rounded px-3 py-1.5 text-sm font-medium"
+                        className="border border-gray-300 bg-white rounded px-3 py-2 text-sm font-medium"
                         value={queueFilter}
                         onChange={(e) => setQueueFilter(e.target.value)}
                       >
@@ -2148,22 +2638,28 @@
                       </select>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => { setEditingOrder(null); setActiveNav('new_order'); }}
+                        className="md:hidden flex-1 bg-amber-700 hover:bg-amber-800 text-white px-3.5 py-2.5 rounded text-sm font-bold inline-flex items-center justify-center gap-1.5 min-h-[44px]"
+                      >
+                        <Icon name="Plus" size={16} /> New Order
+                      </button>
                       {selectedIds.length > 0 && (
                         <button
                           onClick={() => {
                             const chosen = db.orders.filter((o) => selectedIds.includes(o.id));
                             setStickerBatch(chosen);
                           }}
-                          className="bg-amber-700 hover:bg-amber-800 text-white px-3 py-1.5 rounded text-xs font-bold inline-flex items-center gap-1.5"
+                          className="bg-amber-700 hover:bg-amber-800 text-white px-3 py-2 rounded text-xs font-bold inline-flex items-center gap-1.5 min-h-[44px] md:min-h-0"
                         >
-                          <Icon name="Printer" size={14} /> Batch Print Stickers ({selectedIds.length})
+                          <Icon name="Printer" size={14} /> Batch Print ({selectedIds.length})
                         </button>
                       )}
                       {isAdmin && (
                         <button
                           onClick={handleDownloadExcel}
-                          className="bg-white hover:bg-gray-50 border border-gray-300 text-gray-800 px-3 py-1.5 rounded text-xs font-semibold inline-flex items-center gap-1.5"
+                          className="bg-white hover:bg-gray-50 border border-gray-300 text-gray-800 px-3 py-2 rounded text-xs font-semibold inline-flex items-center justify-center gap-1.5 min-h-[44px] md:min-h-0"
                         >
                           <Icon name="Download" size={14} /> Excel Backup
                         </button>
@@ -2171,8 +2667,120 @@
                     </div>
                   </div>
 
-                  {/* Dense ERP Data Table with Sticky Header */}
-                  <div className="overflow-x-auto max-h-[75vh]">
+                  {/* ======================================================= */}
+                  {/* MOBILE CARD LIST (< 768px):                             */}
+                  {/* Order no., customer name, design, due date, status chip */}
+                  {/* balance, with tap to open details                       */}
+                  {/* ======================================================= */}
+                  <div className="md:hidden divide-y divide-gray-200">
+                    {filteredOrders.length === 0 ? (
+                      <div className="p-8 text-center text-gray-500 text-sm">
+                        No orders match the current filter. Tap <strong>New Order</strong> above to create one.
+                      </div>
+                    ) : (
+                      filteredOrders.map((o) => {
+                        const urgency = getDueUrgency(o.promised_date, o.status);
+                        const isConfirmed = !['Measurement Pending', 'Estimate Given'].includes(o.status);
+                        return (
+                          <div
+                            key={o.id}
+                            onClick={() => { setEditingOrder(o); setActiveNav('new_order'); }}
+                            className="p-4 hover:bg-gray-50 active:bg-gray-100 cursor-pointer space-y-2.5"
+                          >
+                            <div className="flex justify-between items-start gap-2">
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-base text-gray-900">{o.order_no}</span>
+                                  {o.is_demo && <span className="text-[11px] px-1.5 py-0.5 bg-gray-200 text-gray-700 rounded font-semibold">DEMO</span>}
+                                </div>
+                                <div className="font-semibold text-base text-gray-900 mt-0.5">{o.customer_name}</div>
+                                <div className="text-xs text-gray-500">{o.mobile} • {o.salesman_name}</div>
+                              </div>
+                              <StatusChip status={o.status} />
+                            </div>
+
+                            <div className="text-sm text-gray-800">
+                              <span className="font-medium">{o.design_name}</span>
+                              <span className="text-gray-500"> • {o.total_pcs} pcs • {o.seating_feet} ft seat</span>
+                            </div>
+
+                            <div className="flex flex-wrap justify-between items-center gap-2 pt-1 border-t border-gray-100 tabular-nums">
+                              <div className="text-xs text-gray-600 flex items-center gap-1.5">
+                                <span>Due: <strong className="text-gray-900">{formatDateDDMMYYYY(o.promised_date)}</strong></span>
+                                {urgency && (
+                                  <span className={`px-1.5 py-0.5 rounded text-[11px] font-bold ${
+                                    urgency.level === 'overdue' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-900'
+                                  }`}>
+                                    {urgency.label}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-sm">
+                                <span className="text-gray-500 text-xs mr-1">Bal:</span>
+                                <strong className={Number(o.balance_amount) > 0 ? 'text-red-700' : 'text-emerald-700'}>
+                                  {formatINR(o.balance_amount)}
+                                </strong>
+                              </div>
+                            </div>
+
+                            {/* Quick Mobile Actions Row (stopPropagation so tapping buttons doesn't trigger card open) */}
+                            <div className="pt-2 flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
+                              {isConfirmed && (
+                                <button
+                                  type="button"
+                                  onClick={() => setStickerBatch([o])}
+                                  className="px-3 py-2 border border-gray-300 bg-white rounded text-xs font-semibold text-gray-800 inline-flex items-center gap-1.5 min-h-[44px]"
+                                >
+                                  <Icon name="Printer" size={15} /> Sticker
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setTimelineOrder(o)}
+                                className="px-3 py-2 border border-gray-300 bg-white rounded text-xs font-semibold text-gray-800 inline-flex items-center gap-1.5 min-h-[44px]"
+                              >
+                                <Icon name="History" size={15} /> History
+                              </button>
+                              {o.status === 'Silai Done' && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleStatusChange(o, 'Ready')}
+                                  className="px-3 py-2 bg-emerald-700 text-white rounded text-xs font-semibold min-h-[44px]"
+                                >
+                                  Mark Ready
+                                </button>
+                              )}
+                              {o.status === 'Ready' && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleStatusChange(o, 'Delivered')}
+                                  className="px-3 py-2 bg-gray-900 text-white rounded text-xs font-semibold min-h-[44px]"
+                                >
+                                  Deliver
+                                </button>
+                              )}
+                              <a
+                                href={WhatsAppService.getLink(
+                                  o.status === 'Ready' ? 'ready' : o.status === 'Delivered' ? 'delivered' : isConfirmed ? 'receipt' : 'followup',
+                                  o
+                                )}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="ml-auto px-3 py-2 border border-gray-300 bg-white text-emerald-700 rounded text-xs font-semibold inline-flex items-center gap-1.5 min-h-[44px]"
+                              >
+                                <Icon name="MessageSquare" size={15} /> WhatsApp
+                              </a>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {/* ======================================================= */}
+                  {/* DESKTOP TABLE (>= 768px — kept identical)               */}
+                  {/* ======================================================= */}
+                  <div className="hidden md:block overflow-x-auto max-h-[75vh]">
                     <table className="w-full text-left border-collapse tabular-nums">
                       <thead className="bg-gray-100 text-gray-600 text-xs uppercase sticky top-0 z-10 border-b border-gray-300">
                         <tr>
@@ -2337,7 +2945,7 @@
                           saveDb(buildDemoDataset(db));
                           alert('30 realistic demo orders loaded.');
                         }}
-                        className="px-3.5 py-2 bg-amber-700 hover:bg-amber-800 text-white rounded text-xs font-bold"
+                        className="px-3.5 py-2.5 bg-amber-700 hover:bg-amber-800 text-white rounded text-xs font-bold min-h-[44px] md:min-h-0"
                       >
                         Seed 30 Demo Orders
                       </button>
@@ -2351,7 +2959,7 @@
                             activityLogs: db.activityLogs.filter((a) => !a.is_demo)
                           });
                         }}
-                        className="px-3.5 py-2 bg-white hover:bg-red-50 border border-red-300 text-red-700 rounded text-xs font-bold"
+                        className="px-3.5 py-2.5 bg-white hover:bg-red-50 border border-red-300 text-red-700 rounded text-xs font-bold min-h-[44px] md:min-h-0"
                       >
                         Wipe Demo Data
                       </button>
@@ -2364,7 +2972,7 @@
                     <div className="flex gap-2">
                       <input
                         placeholder="Add new salesman name..."
-                        className="border border-gray-300 rounded px-3 py-1.5 text-sm flex-1"
+                        className="border border-gray-300 rounded px-3 py-2 text-sm flex-1"
                         value={newSalesman}
                         onChange={(e) => setNewSalesman(e.target.value)}
                       />
@@ -2375,21 +2983,21 @@
                           saveDb({ ...db, salesmen: [...db.salesmen, clean] });
                           setNewSalesman('');
                         }}
-                        className="px-4 py-1.5 bg-gray-900 text-white rounded text-xs font-bold"
+                        className="px-4 py-2 bg-gray-900 text-white rounded text-xs font-bold min-h-[44px] md:min-h-0"
                       >
                         Add
                       </button>
                     </div>
                     <div className="divide-y divide-gray-200 border border-gray-200 rounded">
                       {db.salesmen.map((s) => (
-                        <div key={s} className="px-3 py-2 flex justify-between items-center text-sm">
+                        <div key={s} className="px-3 py-2.5 flex justify-between items-center text-sm">
                           <span className="font-medium">{s}</span>
                           <button
                             onClick={() => {
                               if (!confirm(`Remove "${s}" from active salesmen list?`)) return;
                               saveDb({ ...db, salesmen: db.salesmen.filter((x) => x !== s) });
                             }}
-                            className="text-xs text-red-700 hover:underline font-semibold"
+                            className="text-xs text-red-700 hover:underline font-semibold py-1 px-2"
                           >
                             Remove
                           </button>
@@ -2413,21 +3021,21 @@
                           <span className="text-gray-700 font-medium">{r.label}</span>
                           <input
                             maxLength={4}
-                            className="border border-gray-300 rounded px-2.5 py-1 w-24 text-center font-bold tabular-nums"
+                            className="border border-gray-300 rounded px-2.5 py-1.5 w-24 text-center font-bold tabular-nums"
                             value={pinEdits[r.key] || ''}
                             onChange={(e) => setPinEdits({ ...pinEdits, [r.key]: e.target.value })}
                           />
                         </div>
                       ))}
                     </div>
-                    <div className="grid grid-cols-2 gap-3 pt-2 border-t border-gray-200">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-gray-200">
                       <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Tailor 1 Rate (₹/pc)</label>
-                        <input type="number" className="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm font-bold tabular-nums" value={rateEdits.tailor_1} onChange={(e) => setRateEdits({ ...rateEdits, tailor_1: Number(e.target.value) })} />
+                        <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Tailor 1 Rate (₹/pc)</label>
+                        <input type="number" className="w-full border border-gray-300 rounded px-2.5 py-2 text-sm font-bold tabular-nums" value={rateEdits.tailor_1} onChange={(e) => setRateEdits({ ...rateEdits, tailor_1: Number(e.target.value) })} />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Tailor 2 Rate (₹/pc)</label>
-                        <input type="number" className="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm font-bold tabular-nums" value={rateEdits.tailor_2} onChange={(e) => setRateEdits({ ...rateEdits, tailor_2: Number(e.target.value) })} />
+                        <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Tailor 2 Rate (₹/pc)</label>
+                        <input type="number" className="w-full border border-gray-300 rounded px-2.5 py-2 text-sm font-bold tabular-nums" value={rateEdits.tailor_2} onChange={(e) => setRateEdits({ ...rateEdits, tailor_2: Number(e.target.value) })} />
                       </div>
                     </div>
                     <button
@@ -2435,7 +3043,7 @@
                         saveDb({ ...db, settings: { ...db.settings, pins: pinEdits, tailorRates: rateEdits } });
                         alert('PINs and Tailor Rates saved.');
                       }}
-                      className="px-4 py-2 bg-gray-900 text-white rounded text-xs font-bold"
+                      className="w-full sm:w-auto px-4 py-2.5 bg-gray-900 text-white rounded text-xs font-bold min-h-[44px] md:min-h-0"
                     >
                       Save PINs & Rates
                     </button>
@@ -2445,11 +3053,11 @@
                   <div className="bg-white border border-gray-300 rounded p-4 space-y-4">
                     <div>
                       <h3 className="font-bold text-base text-gray-900 mb-2">Staff Mobile Onboarding & Device Approval</h3>
-                      <div className="flex gap-2 mb-3">
-                        <button onClick={() => { navigator.clipboard.writeText(staffMagicLink); alert('Staff setup link copied.'); }} className="px-3 py-1.5 bg-gray-900 text-white rounded text-xs font-semibold">
+                      <div className="flex flex-wrap gap-2 mb-3">
+                        <button onClick={() => { navigator.clipboard.writeText(staffMagicLink); alert('Staff setup link copied.'); }} className="px-3 py-2 bg-gray-900 text-white rounded text-xs font-semibold min-h-[44px] md:min-h-0">
                           Copy Staff Setup Link
                         </button>
-                        <a href={`https://wa.me/?text=${encodeURIComponent('Shree Gayatri Sofa Cover App Link:\n' + staffMagicLink)}`} target="_blank" rel="noreferrer" className="px-3 py-1.5 bg-emerald-700 text-white rounded text-xs font-semibold">
+                        <a href={`https://wa.me/?text=${encodeURIComponent('Shree Gayatri Sofa Cover App Link:\n' + staffMagicLink)}`} target="_blank" rel="noreferrer" className="px-3 py-2 bg-emerald-700 text-white rounded text-xs font-semibold inline-flex items-center min-h-[44px] md:min-h-0">
                           Send via WhatsApp
                         </a>
                       </div>
@@ -2458,17 +3066,17 @@
                           <div className="p-3 text-xs text-gray-500">No staff devices pending approval.</div>
                         ) : (
                           db.devices.map((d) => (
-                            <div key={d.fp} className="p-2.5 flex justify-between items-center text-xs">
+                            <div key={d.fp} className="p-2.5 flex justify-between items-center text-xs gap-2">
                               <div>
                                 <span className="font-bold uppercase">{d.role}</span> • <span className="font-mono">{d.fp}</span> ({d.status})
                               </div>
                               <div className="flex gap-1">
                                 {d.status !== 'approved' && (
-                                  <button onClick={() => saveDb({ ...db, devices: db.devices.map((x) => (x.fp === d.fp ? { ...x, status: 'approved' } : x)) })} className="px-2 py-1 bg-emerald-700 text-white rounded font-bold">
+                                  <button onClick={() => saveDb({ ...db, devices: db.devices.map((x) => (x.fp === d.fp ? { ...x, status: 'approved' } : x)) })} className="px-2.5 py-1.5 bg-emerald-700 text-white rounded font-bold">
                                     Approve
                                   </button>
                                 )}
-                                <button onClick={() => saveDb({ ...db, devices: db.devices.filter((x) => x.fp !== d.fp) })} className="px-2 py-1 bg-red-100 text-red-700 rounded font-bold">
+                                <button onClick={() => saveDb({ ...db, devices: db.devices.filter((x) => x.fp !== d.fp) })} className="px-2.5 py-1.5 bg-red-100 text-red-700 rounded font-bold">
                                   Revoke
                                 </button>
                               </div>
@@ -2480,36 +3088,36 @@
 
                     <div className="pt-3 border-t border-gray-200">
                       <h4 className="font-bold text-xs uppercase text-gray-600 mb-2">Sticker Label Size (mm) & Stage Stuck Alerts (Hours)</h4>
-                      <div className="flex flex-wrap gap-3 items-end">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                         <div>
-                          <label className="block text-xs text-gray-600">Width (mm)</label>
-                          <input type="number" className="border border-gray-300 rounded px-2 py-1 w-20 text-sm tabular-nums" value={dimEdits.w} onChange={(e) => setDimEdits({ ...dimEdits, w: Number(e.target.value) })} />
+                          <label className="block text-xs text-gray-600 mb-1 mobile-label">Width (mm)</label>
+                          <input type="number" className="border border-gray-300 rounded px-2.5 py-1.5 w-full text-sm tabular-nums" value={dimEdits.w} onChange={(e) => setDimEdits({ ...dimEdits, w: Number(e.target.value) })} />
                         </div>
                         <div>
-                          <label className="block text-xs text-gray-600">Height (mm)</label>
-                          <input type="number" className="border border-gray-300 rounded px-2 py-1 w-20 text-sm tabular-nums" value={dimEdits.h} onChange={(e) => setDimEdits({ ...dimEdits, h: Number(e.target.value) })} />
+                          <label className="block text-xs text-gray-600 mb-1 mobile-label">Height (mm)</label>
+                          <input type="number" className="border border-gray-300 rounded px-2.5 py-1.5 w-full text-sm tabular-nums" value={dimEdits.h} onChange={(e) => setDimEdits({ ...dimEdits, h: Number(e.target.value) })} />
                         </div>
                         <div>
-                          <label className="block text-xs text-gray-600">Cutting Alert (h)</label>
-                          <input type="number" className="border border-gray-300 rounded px-2 py-1 w-20 text-sm tabular-nums" value={alertEdits['Cutting Pending']} onChange={(e) => setAlertEdits({ ...alertEdits, 'Cutting Pending': Number(e.target.value) })} />
+                          <label className="block text-xs text-gray-600 mb-1 mobile-label">Cutting Alert (h)</label>
+                          <input type="number" className="border border-gray-300 rounded px-2.5 py-1.5 w-full text-sm tabular-nums" value={alertEdits['Cutting Pending']} onChange={(e) => setAlertEdits({ ...alertEdits, 'Cutting Pending': Number(e.target.value) })} />
                         </div>
                         <div>
-                          <label className="block text-xs text-gray-600">Tailor Alert (h)</label>
-                          <input type="number" className="border border-gray-300 rounded px-2 py-1 w-20 text-sm tabular-nums" value={alertEdits['With Tailor']} onChange={(e) => setAlertEdits({ ...alertEdits, 'With Tailor': Number(e.target.value) })} />
+                          <label className="block text-xs text-gray-600 mb-1 mobile-label">Tailor Alert (h)</label>
+                          <input type="number" className="border border-gray-300 rounded px-2.5 py-1.5 w-full text-sm tabular-nums" value={alertEdits['With Tailor']} onChange={(e) => setAlertEdits({ ...alertEdits, 'With Tailor': Number(e.target.value) })} />
                         </div>
-                        <button
-                          onClick={() => {
-                            saveDb({
-                              ...db,
-                              settings: { ...db.settings, sticker_width_mm: dimEdits.w, sticker_height_mm: dimEdits.h, stageAlertHours: alertEdits }
-                            });
-                            alert('Sticker & Alert settings saved.');
-                          }}
-                          className="px-3 py-1.5 bg-gray-900 text-white rounded text-xs font-bold"
-                        >
-                          Save
-                        </button>
                       </div>
+                      <button
+                        onClick={() => {
+                          saveDb({
+                            ...db,
+                            settings: { ...db.settings, sticker_width_mm: dimEdits.w, sticker_height_mm: dimEdits.h, stageAlertHours: alertEdits }
+                          });
+                          alert('Sticker & Alert settings saved.');
+                        }}
+                        className="mt-3 w-full sm:w-auto px-4 py-2.5 bg-gray-900 text-white rounded text-xs font-bold min-h-[44px] md:min-h-0"
+                      >
+                        Save Sticker & Alert Settings
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -2519,7 +3127,7 @@
 
           {/* Ctrl+K Global Search Modal */}
           {globalSearchOpen && (
-            <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 pt-20 p-4" onClick={() => setGlobalSearchOpen(false)}>
+            <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 pt-14 md:pt-20 p-4" onClick={() => setGlobalSearchOpen(false)}>
               <div className="bg-white rounded-md border border-gray-300 max-w-lg w-full shadow-xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
                 <div className="p-3 border-b border-gray-200 flex items-center gap-2">
                   <Icon name="Search" size={16} className="text-gray-400" />
@@ -2530,7 +3138,7 @@
                     value={globalSearchTerm}
                     onChange={(e) => setGlobalSearchTerm(e.target.value)}
                   />
-                  <button onClick={() => setGlobalSearchOpen(false)} className="text-xs text-gray-400">ESC</button>
+                  <button onClick={() => setGlobalSearchOpen(false)} className="text-xs text-gray-500 px-2 py-1">ESC</button>
                 </div>
                 <div className="max-h-72 overflow-y-auto divide-y divide-gray-100">
                   {globalMatches.length === 0 ? (
@@ -2544,7 +3152,7 @@
                           setEditingOrder(o);
                           setActiveNav('new_order');
                         }}
-                        className="w-full text-left px-4 py-2.5 hover:bg-gray-50 flex justify-between items-center"
+                        className="w-full text-left px-4 py-3 hover:bg-gray-50 flex justify-between items-center gap-2"
                       >
                         <div>
                           <span className="font-bold text-sm text-gray-900">{o.order_no}</span>
@@ -2622,7 +3230,7 @@
           await installPrompt.userChoice;
           setInstallPrompt(null);
         } else {
-          alert('To install this app:\n• Desktop Chrome: Click the Install icon in the right side of the address bar.\n• Mobile Chrome: Tap the 3-dots menu -> "Install app" or "Add to Home screen".');
+          alert('To install this app:\n• Desktop Chrome: Click the Install icon in the right side of the address bar.\n• Mobile Safari/Chrome: Tap Share / 3-dots menu -> "Add to Home Screen".');
         }
       };
 
@@ -2719,7 +3327,7 @@
                 className="space-y-3"
               >
                 <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-1">Supabase Publishable Key</label>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Supabase Publishable Key</label>
                   <input
                     placeholder="sb_publishable_..."
                     className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono"
@@ -2727,7 +3335,7 @@
                     onChange={(e) => setKeyInput(e.target.value)}
                   />
                 </div>
-                <button className="w-full bg-amber-700 hover:bg-amber-800 text-white py-2.5 rounded font-bold text-sm">
+                <button className="w-full bg-amber-700 hover:bg-amber-800 text-white py-3 rounded font-bold text-sm min-h-[44px]">
                   Connect & Open ERP
                 </button>
               </form>
@@ -2744,9 +3352,9 @@
                 <h1 className="font-bold text-base text-gray-900">Shree Gayatri Handloom House</h1>
                 <p className="text-xs text-gray-500">Sofa Cover Dept — Staff Sign In</p>
               </div>
-              <form onSubmit={handleLogin} className="space-y-3">
+              <form onSubmit={handleLogin} className="space-y-3.5">
                 <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-1">Department Role</label>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Department Role</label>
                   <select
                     className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-semibold bg-white"
                     value={selectedRole}
@@ -2758,7 +3366,7 @@
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-1">4-Digit PIN</label>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">4-Digit PIN</label>
                   <input
                     type="password"
                     maxLength={4}
@@ -2769,11 +3377,11 @@
                     onChange={(e) => setPin(e.target.value)}
                   />
                 </div>
-                <button className="w-full bg-gray-900 hover:bg-gray-800 text-white py-2.5 rounded font-bold text-sm">
+                <button className="w-full bg-gray-900 hover:bg-gray-800 text-white py-3 rounded font-bold text-sm min-h-[44px]">
                   Sign In
                 </button>
               </form>
-              <button onClick={triggerInstall} className="w-full border border-gray-300 hover:bg-gray-50 text-gray-700 py-2 rounded text-xs font-semibold">
+              <button onClick={triggerInstall} className="w-full border border-gray-300 hover:bg-gray-50 text-gray-700 py-2.5 rounded text-xs font-semibold min-h-[44px]">
                 Install App on Desktop / Mobile
               </button>
             </div>
@@ -2793,7 +3401,7 @@
               </p>
               <button
                 onClick={() => { sessionStorage.removeItem('sg_active_role'); setCurrentRole(null); }}
-                className="w-full bg-gray-900 text-white py-2 rounded text-xs font-bold"
+                className="w-full bg-gray-900 text-white py-2.5 rounded text-xs font-bold min-h-[44px]"
               >
                 Back to Sign In
               </button>
@@ -2821,11 +3429,11 @@
           <header className="bg-gray-900 text-white px-4 py-3 flex justify-between items-center sticky top-0 z-30">
             <div>
               <div className="font-bold text-sm">Shree Gayatri Handloom House</div>
-              <div className="text-[11px] text-amber-400 font-semibold uppercase">{currentRole.replace('_', ' ')} • {syncStatus}</div>
+              <div className="text-xs text-amber-400 font-semibold uppercase">{currentRole.replace('_', ' ')} • {syncStatus}</div>
             </div>
             <button
               onClick={() => { sessionStorage.removeItem('sg_active_role'); setCurrentRole(null); }}
-              className="bg-gray-800 border border-gray-700 px-3 py-1.5 rounded text-xs font-semibold"
+              className="bg-gray-800 border border-gray-700 px-3 py-2 rounded text-xs font-semibold min-h-[44px]"
             >
               Logout
             </button>

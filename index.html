@@ -241,9 +241,68 @@
     }
     const calculateEstimate = calcEstimate;
 
-    // ---- ORDER LINES START (Seating / Back / Handle / Other: own design, rate, segments + width) ----
+    // ---- ORDER LINES START (Sofa Cover, Cushion/Pillow Cover, Fabric Only — Inches / Pcs / Meter + Sample + Making) ----
     function newId() { return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'L' + Date.now() + Math.random().toString(36).slice(2, 7); }
-    function newLine(part) { return { id: newId(), part: part || 'Seating', other_name: '', design: '', unit: 'Inches', rate: '', pending: false, rows: [{ expr: '', wid: '' }] }; }
+    function isCushionPart(part) { return part === 'Cushion Cover' || part === 'Pillow Cover'; }
+    function newLine(part, unitOverride) {
+      const p = part || 'Seating';
+      const defaultUnit = unitOverride || (isCushionPart(p) || p === 'Fabric' ? 'Meter' : 'Inches');
+      return {
+        id: newId(),
+        part: p,
+        other_name: '',
+        design: '',
+        unit: defaultUnit,
+        rate: '',
+        making_charge: '',
+        pending: false,
+        size_l: '',
+        size_w: '',
+        size_unit: 'in',
+        thickness: '',
+        covers_count: '',
+        fabric_meters: '',
+        as_per_sample: false,
+        sample_note: '',
+        sample_photo: '',
+        rows: [{ expr: '', wid: '' }]
+      };
+    }
+
+    // Compress uploaded sample photo to < ~90 KB JPEG for safe db.json storage
+    function compressImageUnder100KB(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('Could not read image'));
+        reader.onload = () => {
+          const img = new Image();
+          img.onerror = () => reject(new Error('Invalid image file'));
+          img.onload = () => {
+            let maxDim = 640;
+            let quality = 0.72;
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            let dataUrl = '';
+            for (let attempt = 0; attempt < 5; attempt++) {
+              const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+              canvas.width = Math.max(1, Math.round(img.width * scale));
+              canvas.height = Math.max(1, Math.round(img.height * scale));
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              dataUrl = canvas.toDataURL('image/jpeg', quality);
+              const approxBytes = Math.round((dataUrl.length * 3) / 4);
+              if (approxBytes <= 92000) break;
+              quality = Math.max(0.35, quality - 0.12);
+              maxDim = Math.round(maxDim * 0.8);
+            }
+            resolve(dataUrl);
+          };
+          img.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+      });
+    }
 
     // "102+102+36", "24x4" (x or × = multiply), decimals allowed
     function evalLen(expr) {
@@ -259,33 +318,101 @@
 
     function cleanExpr(e) { return String(e || '').replace(/[+x×*,\s]+$/i, ''); }
     function linePartName(l) { return l.part === 'Other' ? (l.other_name || 'Other') : l.part; }
+    function lineExtraDetailsText(l) {
+      const bits = [];
+      if (l.covers_count) bits.push(`${l.covers_count} cover${Number(l.covers_count) > 1 ? 's' : ''}`);
+      if (l.size_l || l.size_w) bits.push(`${l.size_l || '?'}×${l.size_w || '?'} ${l.size_unit || 'in'}`);
+      if (l.thickness) bits.push(`${l.thickness} thick`);
+      if (l.fabric_meters && l.unit !== 'Meter') bits.push(`${l.fabric_meters} mtr`);
+      if (l.as_per_sample) bits.push('As per sample');
+      if (l.sample_note) bits.push(l.sample_note);
+      return bits.join(', ');
+    }
     function lineRowsText(l) {
-      return (l.rows || []).filter((r) => cleanExpr(r.expr)).map((r) => cleanExpr(r.expr) + (r.wid ? ' (W ' + r.wid + '")' : '')).join(' | ');
+      if (l.unit === 'Meter') {
+        const m = parseFloat(l.fabric_meters);
+        const exprPart = (l.rows || []).filter((r) => cleanExpr(r.expr)).map((r) => cleanExpr(r.expr)).join(' + ');
+        const base = !isNaN(m) && m > 0 ? `${m} mtr` : (exprPart ? `${exprPart} mtr` : '');
+        const extra = lineExtraDetailsText(l);
+        return [base, extra].filter(Boolean).join(' • ');
+      }
+      const base = (l.rows || []).filter((r) => cleanExpr(r.expr)).map((r) => cleanExpr(r.expr) + (r.wid ? ' (W ' + r.wid + '")' : '')).join(' | ');
+      const extra = lineExtraDetailsText(l);
+      return [base, extra].filter(Boolean).join(' • ');
     }
 
-    // Feet = ceil(inches / 3) / 4 (round UP to .25 ft, integer maths). Amount is rounded DOWN to whole rupees (as on the paper bills).
+    // Feet = ceil(inches / 3) / 4 (round UP to .25 ft, integer maths).
+    // Meter = decimal meters x rate (integer centi-meter math). Making charge added per line.
+    // Amount is rounded DOWN to whole rupees (as on the paper bills).
     function calcLine(line) {
-      const unit = line.unit === 'Pcs' ? 'Pcs' : 'Inches';
+      const unit = line.unit === 'Pcs' ? 'Pcs' : line.unit === 'Meter' ? 'Meter' : 'Inches';
       const rate = Math.max(0, toInt(line.rate));
+      const making = Math.max(0, toInt(line.making_charge));
       const rows = (line.rows || []).map((r) => ({ expr: cleanExpr(r.expr), wid: String(r.wid || '').trim(), value: evalLen(r.expr) }));
-      const raw = Math.round(rows.reduce((a, r) => a + r.value, 0) * 100) / 100;
-      let quarters = 0, qty = 0, qtyStr = '0', amount = 0;
+      const rowsSum = Math.round(rows.reduce((a, r) => a + r.value, 0) * 100) / 100;
+      const fabricMetersNum = Math.round((parseFloat(line.fabric_meters) || 0) * 100) / 100;
+      const coversNum = Math.max(0, toInt(line.covers_count));
+
+      let raw = rowsSum;
+      let quarters = 0, qty = 0, qtyStr = '0', baseAmount = 0;
+
       if (unit === 'Inches') {
         quarters = raw > 0 ? Math.ceil(Math.round(raw * 100) / 300) : 0;
         qty = quarters / 4;
         qtyStr = qty.toFixed(2);
-        amount = Math.floor((quarters * rate) / 4);
+        baseAmount = Math.floor((quarters * rate) / 4);
+      } else if (unit === 'Meter') {
+        raw = fabricMetersNum > 0 ? fabricMetersNum : rowsSum;
+        qty = raw;
+        qtyStr = raw > 0 ? String(raw) : '0';
+        baseAmount = Math.floor((Math.round(raw * 100) * rate) / 100);
       } else {
+        raw = rowsSum > 0 ? rowsSum : coversNum;
         qty = raw;
         qtyStr = String(raw);
-        amount = Math.floor(raw * rate);
+        baseAmount = Math.floor(raw * rate);
       }
+
+      const amount = baseAmount + making;
       const name = linePartName(line);
+      const unitLbl = unit === 'Inches' ? 'ft' : unit === 'Meter' ? 'mtr' : 'pcs';
       const rowsText = rows.filter((r) => r.expr).map((r) => r.expr + (r.wid ? ' (W ' + r.wid + '")' : '')).join(' | ');
+      const extraTxt = lineExtraDetailsText(line);
+      const makingTxt = making > 0 ? ` + Making Rs ${making.toLocaleString('en-IN')}` : '';
+
       const text = unit === 'Inches'
-        ? `${name}: ${rowsText || '0'} = ${raw} in = ${qtyStr} ft × Rs ${rate.toLocaleString('en-IN')} = Rs ${amount.toLocaleString('en-IN')}`
-        : `${name}: ${rowsText || '0'} = ${raw} pcs × Rs ${rate.toLocaleString('en-IN')} = Rs ${amount.toLocaleString('en-IN')}`;
-      return { id: line.id, part: line.part, other_name: line.other_name || '', name, design: String(line.design || '').trim(), unit, rate, pending: !!line.pending, rows, raw, quarters, qty, qtyStr, amount, text };
+        ? `${name}: ${rowsText || '0'} = ${raw} in = ${qtyStr} ft × Rs ${rate.toLocaleString('en-IN')}${makingTxt} = Rs ${amount.toLocaleString('en-IN')}`
+        : `${name}${extraTxt ? ' (' + extraTxt + ')' : ''}: ${qtyStr} ${unitLbl} × Rs ${rate.toLocaleString('en-IN')}${makingTxt} = Rs ${amount.toLocaleString('en-IN')}`;
+
+      return {
+        id: line.id,
+        part: line.part,
+        other_name: line.other_name || '',
+        name,
+        design: String(line.design || '').trim(),
+        unit,
+        unitLbl,
+        rate,
+        making_charge: making,
+        baseAmount,
+        pending: !!line.pending,
+        size_l: String(line.size_l || '').trim(),
+        size_w: String(line.size_w || '').trim(),
+        size_unit: line.size_unit || 'in',
+        thickness: String(line.thickness || '').trim(),
+        covers_count: line.covers_count || '',
+        fabric_meters: line.fabric_meters || '',
+        as_per_sample: !!line.as_per_sample,
+        sample_note: String(line.sample_note || '').trim(),
+        sample_photo: line.sample_photo || '',
+        rows,
+        raw,
+        quarters,
+        qty,
+        qtyStr,
+        amount,
+        text
+      };
     }
 
     function calcOrderLines(form = {}) {
@@ -303,7 +430,8 @@
         balance,
         advanceInt: advance,
         visitChargeInt: visit,
-        hasMeasure: lines.some((l) => l.raw > 0),
+        hasMeasure: lines.some((l) => l.raw > 0 || l.making_charge > 0),
+        hasPendingLine: lines.some((l) => l.pending),
         seatingInches: sum(seat, (l) => (l.unit === 'Inches' ? l.raw : 0)),
         seatingFeet: sum(seat, (l) => (l.unit === 'Inches' ? l.qty : 0)),
         backRaw: sum(back, (l) => l.raw),
@@ -329,7 +457,14 @@
       };
     }
     function storeLine(l) {
-      return { id: l.id, part: l.part, other_name: l.other_name, design: l.design, unit: l.unit, rate: l.rate, pending: l.pending, rows: l.rows.map((r) => ({ expr: r.expr, wid: r.wid })), raw: l.raw, qty: l.qty, amount: l.amount };
+      return {
+        id: l.id, part: l.part, other_name: l.other_name, design: l.design, unit: l.unit, rate: l.rate,
+        making_charge: l.making_charge || 0, pending: l.pending,
+        size_l: l.size_l || '', size_w: l.size_w || '', size_unit: l.size_unit || 'in',
+        thickness: l.thickness || '', covers_count: l.covers_count || '', fabric_meters: l.fabric_meters || '',
+        as_per_sample: !!l.as_per_sample, sample_note: l.sample_note || '', sample_photo: l.sample_photo || '',
+        rows: l.rows.map((r) => ({ expr: r.expr, wid: r.wid })), raw: l.raw, qty: l.qty, amount: l.amount
+      };
     }
 
     // Lines of any order: new orders have order.lines, older orders are read from the old fields.
@@ -345,33 +480,171 @@
       const ls = getOrderLines(order);
       if (!ls.length) return [newLine('Seating'), newLine('Back')];
       return ls.map((l) => ({
-        id: newId(), part: l.part || 'Seating', other_name: l.other_name || '', design: l.design || '', unit: l.unit === 'Pcs' ? 'Pcs' : 'Inches',
-        rate: l.rate || '', pending: !!l.pending,
+        id: newId(), part: l.part || 'Seating', other_name: l.other_name || '', design: l.design || '',
+        unit: l.unit === 'Pcs' ? 'Pcs' : l.unit === 'Meter' ? 'Meter' : 'Inches',
+        rate: l.rate || '', making_charge: l.making_charge || '', pending: !!l.pending,
+        size_l: l.size_l || '', size_w: l.size_w || '', size_unit: l.size_unit || 'in',
+        thickness: l.thickness || '', covers_count: l.covers_count || '', fabric_meters: l.fabric_meters || '',
+        as_per_sample: !!l.as_per_sample, sample_note: l.sample_note || '', sample_photo: l.sample_photo || '',
         rows: (l.rows && l.rows.length ? l.rows : [{ expr: '', wid: '' }]).map((r) => ({ expr: r.expr || '', wid: r.wid || '' }))
       }));
     }
     // ---- ORDER LINES END ----
+
+    const DEFAULT_WA_TEMPLATES = {
+      estimate: {
+        lang: 'Hinglish',
+        text: `Namaste {customer} ji!\n*Shree Gayatri Furnishing Hub* mein aapka swagat hai.\n\nAapke order ka Estimate (*{order_no}*):\n{lines}\n\n*Estimate Total: Rs {total}*\nOrder confirm karne ke liye kripya sampark karein: {shop_phone}`
+      },
+      receipt: {
+        lang: 'Hinglish',
+        text: `Namaste {customer} ji! Aapka order confirm ho gaya hai.\n\n*Shree Gayatri Furnishing Hub*\nOrder No: *{order_no}*\n\n*Order Details:*\n{lines}\n\nTotal: *Rs {total}*\nAdvance Paid: *Rs {advance}*\nBalance Due: *Rs {balance}*\nPromised Delivery Date: *{promised_date}*\nShop Contact: {shop_phone}\n\n*Zaroori Niyam (Terms):*\n1. Cover ko garm paani mein na dhoyein (Do not wash the cover in hot water).\n2. Machine-dry ya spin na karein (Do not machine-dry/spin).\n3. Sofa aur curtain items ki delivery ke liye 3rd floor par jana hoga (For delivery of sofa and curtain items you must go to the 3rd floor).\n4. Advance paid is non-refundable.`
+      },
+      ready: {
+        lang: 'Hinglish',
+        text: `Namaste {customer} ji! Aapka order (*{order_no}*) bankar *READY* hai.\n\n{lines}\nBalance Due: *Rs {balance}*\n\nNote: Sofa aur curtain items ki delivery ke liye 3rd floor par padharein.\n- *Shree Gayatri Furnishing Hub* ({shop_phone})`
+      },
+      reminder: {
+        lang: 'Hinglish',
+        text: `Namaste {customer} ji! Aapke Order *{order_no}* ka Balance *Rs {balance}* baaki hai.\nKripya 3rd floor se apna order collect karein.\n- *Shree Gayatri Furnishing Hub* ({shop_phone})`
+      },
+      delivered: {
+        lang: 'Hinglish',
+        text: `Dhanyavaad {customer} ji! Order *{order_no}* deliver ho chuka hai.\nYaad rakhein: Cover ko garm paani mein na dhoyein aur machine-dry/spin na karein.\n- *Shree Gayatri Furnishing Hub* ({shop_phone})`
+      }
+    };
+
+    const WA_LANG_PRESETS = {
+      Gujarati: {
+        estimate: `નમસ્તે {customer} જી!\n*Shree Gayatri Furnishing Hub* માં આપનું સ્વાગત છે.\n\nઆપના ઓર્ડરનો અંદાજ (*{order_no}*):\n{lines}\n\n*કુલ રકમ: Rs {total}*\nઓર્ડર કન્ફર્મ કરવા સંપર્ક કરો: {shop_phone}`,
+        receipt: `નમસ્તે {customer} જી! આપનો ઓર્ડર કન્ફર્મ થઈ ગયો છે.\n\n*Shree Gayatri Furnishing Hub*\nઓર્ડર નં: *{order_no}*\n\n{lines}\n\nકુલ: *Rs {total}*\nએડવાન્સ: *Rs {advance}*\nબાકી: *Rs {balance}*\nડિલિવરી તારીખ: *{promised_date}*\nસંપર્ક: {shop_phone}\n\n*નિયમો:*\n• કવર ગરમ પાણીમાં ધોવા નહિ.\n• વોશિંગ મશીનમાં ડ્રાય (સ્પીન) કરવા નહિ.\n• સોફા તથા પડદાની ડિલિવરી માટે ઉપર ત્રીજે માળે જવાનું રહેશે.\n• એડવાન્સ આપેલ રકમ કોઈ પણ સંજોગોમાં પરત મળશે નહિ.`,
+        ready: `નમસ્તે {customer} જી! આપનો ઓર્ડર (*{order_no}*) બનીને *READY* છે.\nબાકી રકમ: *Rs {balance}*.\nડિલિવરી માટે ત્રીજે માળે પધારો.\n- *Shree Gayatri Furnishing Hub* ({shop_phone})`,
+        reminder: `નમસ્તે {customer} જી! ઓર્ડર *{order_no}* ના બાકી *Rs {balance}* જમા કરાવી ત્રીજે માળેથી ઓર્ડર લઈ જવા વિનંતી.\n- *Shree Gayatri Furnishing Hub* ({shop_phone})`,
+        delivered: `આભાર {customer} જી! ઓર્ડર *{order_no}* ડિલિવર થઈ ગયો છે.\n- *Shree Gayatri Furnishing Hub* ({shop_phone})`
+      },
+      English: {
+        estimate: `Hello {customer} ji!\nWelcome to *Shree Gayatri Furnishing Hub*.\n\nEstimate for Order *{order_no}*:\n{lines}\n\n*Total Estimate: Rs {total}*\nContact us to confirm: {shop_phone}`,
+        receipt: `Hello {customer} ji! Your order is confirmed.\n\n*Shree Gayatri Furnishing Hub*\nOrder No: *{order_no}*\n\n{lines}\n\nTotal: *Rs {total}*\nAdvance Paid: *Rs {advance}*\nBalance Due: *Rs {balance}*\nPromised Delivery Date: *{promised_date}*\nShop Contact: {shop_phone}\n\n*Terms & Care:*\n1. Do not wash the cover in hot water.\n2. Do not machine-dry/spin.\n3. For delivery of sofa and curtain items you must go to the 3rd floor.\n4. Advance paid is non-refundable.`,
+        ready: `Hello {customer} ji! Your order *{order_no}* is *READY*.\nBalance Due: *Rs {balance}*.\nPlease visit the 3rd floor for collection.\n- *Shree Gayatri Furnishing Hub* ({shop_phone})`,
+        reminder: `Hello {customer} ji! Friendly reminder for Order *{order_no}* with Balance Due *Rs {balance}*.\n- *Shree Gayatri Furnishing Hub* ({shop_phone})`,
+        delivered: `Thank you {customer} ji! Order *{order_no}* has been delivered.\n- *Shree Gayatri Furnishing Hub* ({shop_phone})`
+      }
+    };
 
     const WhatsAppService = {
       formatPhone(mobile) {
         const digits = String(mobile || '').replace(/\D/g, '');
         return digits.length === 10 ? `91${digits}` : digits;
       },
-      getLink(type, order) {
-        const phone = this.formatPhone(order.mobile);
-        let msg = '';
-        if (type === 'receipt') {
-          msg = `Namaste ${order.customer_name} ji! Aapka custom Sofa Cover order confirm ho gaya hai.\n\nOrder No: *${order.order_no}*\nDesign: ${order.design_name}\nTotal Estimate: ${formatINR(order.estimate_total)}\nAdvance Paid: ${formatINR(order.advance_amount)}\nBalance Due: *${formatINR(order.balance_amount)}*\nDelivery Date: ${formatDateDDMMYYYY(order.promised_date)}\n\n- Shree Gayatri Handloom House (Fixed Rate Shop)`;
-        } else if (type === 'ready') {
-          msg = `Namaste ${order.customer_name} ji! Aapka Sofa Cover (Order *${order.order_no}* - ${order.design_name}) bankar *READY* hai.\nBalance Amount: ${formatINR(order.balance_amount)}.\nAap shop se collect kar sakte hain. Dhanyavaad!\n- Shree Gayatri Handloom House`;
-        } else if (type === 'followup') {
-          msg = `Namaste ${order.customer_name} ji! Shree Gayatri Handloom House se aapke Sofa Cover estimate (*${order.order_no}* - ${order.design_name}, Estimate: ${formatINR(order.estimate_total)}) ke baare mein follow-up kar rahe hain. Order confirm karne ke liye reply karein. Dhanyavaad!`;
-        } else {
-          msg = `Thank you ${order.customer_name} ji! Order *${order.order_no}* deliver ho chuka hai. Umeed hai aapko fitting aur design pasand aaya hoga. Fir se padhariye!\n- Shree Gayatri Handloom House`;
+      buildLinesSummary(order) {
+        const ls = getOrderLines(order);
+        if (!ls.length) {
+          return `${order.design_name || 'Sofa Cover'}: Rs ${Math.round(Number(order.estimate_total) || 0).toLocaleString('en-IN')}`;
         }
-        return `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
+        return ls.map((rawLine) => {
+          const c = calcLine(rawLine);
+          const extra = lineExtraDetailsText(c);
+          const unitLbl = c.unit === 'Inches' ? 'ft' : c.unit === 'Meter' ? 'mtr' : 'pcs';
+          const makingTxt = c.making_charge > 0 ? ` + Making Rs ${c.making_charge.toLocaleString('en-IN')}` : '';
+          return `${c.name}${c.design ? ' - ' + c.design : ''}${extra ? ' (' + extra + ')' : ''}: ${c.qtyStr} ${unitLbl} x Rs ${c.rate.toLocaleString('en-IN')}${makingTxt} = Rs ${c.amount.toLocaleString('en-IN')}`;
+        }).join('\n');
+      },
+      renderMessage(type, order, settings) {
+        const mappedType = type === 'followup' ? 'estimate' : (type || 'receipt');
+        const templates = settings?.wa_templates || DEFAULT_WA_TEMPLATES;
+        const tplObj = templates[mappedType] || DEFAULT_WA_TEMPLATES[mappedType] || DEFAULT_WA_TEMPLATES.receipt;
+        const rawTpl = typeof tplObj === 'string' ? tplObj : tplObj.text;
+        const shopPhone = [settings?.shop_phone || '9016904528', settings?.shop_phone_alt || '9725454423'].filter(Boolean).join(' / ');
+        return rawTpl
+          .replace(/\{customer\}/g, order.customer_name || '')
+          .replace(/\{order_no\}/g, order.order_no || '')
+          .replace(/\{lines\}/g, this.buildLinesSummary(order))
+          .replace(/\{total\}/g, Math.round(Number(order.estimate_total) || 0).toLocaleString('en-IN'))
+          .replace(/\{advance\}/g, Math.round(Number(order.advance_amount) || 0).toLocaleString('en-IN'))
+          .replace(/\{balance\}/g, Math.round(Number(order.balance_amount) || 0).toLocaleString('en-IN'))
+          .replace(/\{promised_date\}/g, formatDateDDMMYYYY(order.promised_date))
+          .replace(/\{shop_phone\}/g, shopPhone);
+      },
+      getEncodedUrl(mobile, messageText) {
+        const phone = this.formatPhone(mobile);
+        return `https://wa.me/${phone}?text=${encodeURIComponent(messageText)}`;
+      },
+      getLink(type, order, settings) {
+        const msg = this.renderMessage(type, order, settings);
+        return this.getEncodedUrl(order.mobile, msg);
       }
     };
+
+    function WhatsAppPreviewModal({ initialType, order, settings, onClose }) {
+      const startType = initialType === 'followup' ? 'estimate' : (initialType || 'receipt');
+      const [msgType, setMsgType] = useState(startType);
+      const [text, setText] = useState(() => WhatsAppService.renderMessage(startType, order, settings));
+
+      useEffect(() => {
+        setText(WhatsAppService.renderMessage(msgType, order, settings));
+      }, [msgType, order, settings]);
+
+      return (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-md border border-gray-300 max-w-lg w-full p-4 md:p-5 shadow-xl space-y-3.5">
+            <div className="flex justify-between items-center border-b border-gray-200 pb-3">
+              <div>
+                <h3 className="font-bold text-base text-gray-900">WhatsApp Preview — {order.order_no}</h3>
+                <p className="text-xs text-gray-500">To: {order.customer_name} ({order.mobile})</p>
+              </div>
+              <button onClick={onClose} className="p-2 min-w-[44px] min-h-[44px] text-gray-500 hover:bg-gray-100 rounded inline-flex items-center justify-center">
+                <Icon name="X" size={18} />
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { id: 'estimate', label: 'Estimate' },
+                { id: 'receipt', label: 'Order Receipt' },
+                { id: 'ready', label: 'Ready' },
+                { id: 'reminder', label: 'Balance Reminder' },
+                { id: 'delivered', label: 'Delivered' }
+              ].map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setMsgType(t.id)}
+                  className={`px-2.5 py-1.5 rounded text-xs font-semibold border min-h-[40px] md:min-h-0 ${
+                    msgType === t.id ? 'bg-emerald-700 text-white border-emerald-700' : 'bg-gray-50 text-gray-700 border-gray-300 hover:bg-gray-100'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <textarea
+              rows={11}
+              className="w-full border border-gray-300 rounded p-3 text-xs font-mono bg-gray-50"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+            <div className="flex flex-col sm:flex-row gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  window.open(WhatsAppService.getEncodedUrl(order.mobile, text), '_blank');
+                  onClose();
+                }}
+                className="flex-1 bg-emerald-700 hover:bg-emerald-800 text-white py-2.5 px-4 rounded font-bold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]"
+              >
+                <Icon name="MessageSquare" size={16} /> Open WhatsApp
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="border border-gray-300 bg-white hover:bg-gray-50 px-4 py-2.5 rounded text-xs font-semibold text-gray-700 min-h-[44px]"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
 
     // Restrained Status Chips (Max 5 neutral/muted tones)
     function StatusChip({ status }) {
@@ -397,6 +670,9 @@
       settings: {
         sticker_width_mm: 60,
         sticker_height_mm: 40,
+        shop_phone: '9016904528',
+        shop_phone_alt: '9725454423',
+        wa_templates: DEFAULT_WA_TEMPLATES,
         pins: {
           admin: '8866',
           sales: '1111',
@@ -419,7 +695,9 @@
       devices: [],
       orders: [],
       pieceLogs: [],
-      activityLogs: []
+      activityLogs: [],
+      notes: [],
+      deletedOrderIds: []
     };
 
     // Generate 30 Realistic Demo Orders for testing all reports & workflows
@@ -631,9 +909,12 @@
                       <img src={qrImgSrc} alt="QR" className="w-[9mm] h-[9mm]" />
                     </div>
                     <div className="text-[8.5px] space-y-0.5 my-0.5">
+                      {order.order_type && order.order_type !== 'Sofa Cover' && (
+                        <div className="font-bold uppercase text-[8px]">TYPE: {order.order_type}</div>
+                      )}
                       {getOrderLines(order).map((l, i) => (
                         <div key={i}>
-                          <strong>{linePartName(l).charAt(0)}:</strong> {lineRowsText(l)} = <b>{Number(l.qty) || 0}{l.unit === 'Pcs' ? 'pcs' : 'ft'}</b>
+                          <strong>{linePartName(l).slice(0, 3)}:</strong> {lineRowsText(l)} = <b>{Number(l.qty) || 0}{l.unit === 'Pcs' ? 'pcs' : l.unit === 'Meter' ? 'mtr' : 'ft'}</b>
                           {l.design && l.design !== order.design_name ? ` [${l.design}]` : ''}{l.pending ? ' [PENDING]' : ''}
                         </div>
                       ))}
@@ -704,10 +985,657 @@
     }
 
     // =========================================================================
+    // ITEM 4: IMPORTANT NOTES BOARD (Admin & Sales Home Screen Only)
+    // =========================================================================
+    function ImportantNotesBoard({ notes, orders, onMarkDone, onOpenOrder }) {
+      const [showHistory, setShowHistory] = useState(false);
+      const list = Array.isArray(notes) ? notes : [];
+      const openNotes = list.filter((n) => n.status !== 'done');
+      const doneNotes = list.filter((n) => n.status === 'done');
+      const displayed = showHistory ? doneNotes : openNotes;
+
+      return (
+        <div className="bg-white border border-amber-300 rounded shadow-sm mb-4">
+          <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-200 flex flex-wrap justify-between items-center gap-2">
+            <div className="flex items-center gap-2">
+              <Icon name="Pin" size={16} className="text-amber-800" />
+              <span className="font-bold text-sm text-gray-900">Important Notes</span>
+              <span className={`px-2 py-0.5 rounded-full text-xs font-bold tabular-nums ${openNotes.length > 0 ? 'bg-red-600 text-white' : 'bg-gray-200 text-gray-700'}`}>
+                {openNotes.length} Open
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowHistory((v) => !v)}
+              className="text-xs font-semibold text-amber-900 underline min-h-[36px] md:min-h-0"
+            >
+              {showHistory ? `Open Notes (${openNotes.length})` : `Done History (${doneNotes.length})`}
+            </button>
+          </div>
+          {displayed.length === 0 ? (
+            <div className="px-4 py-3 text-xs text-gray-500">
+              {showHistory ? 'No completed notes in history yet.' : 'No open important notes.'}
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-200 max-h-56 overflow-y-auto">
+              {displayed.map((note) => {
+                const linkedOrder = orders.find((o) => o.id === note.order_id || o.order_no === note.order_no);
+                return (
+                  <div
+                    key={note.id}
+                    onClick={() => linkedOrder && onOpenOrder(linkedOrder)}
+                    className="px-4 py-2.5 hover:bg-gray-50 cursor-pointer flex flex-wrap justify-between items-center gap-2"
+                  >
+                    <div className="space-y-0.5 min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-xs text-gray-900 underline">{note.order_no || '—'}</span>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          note.priority === 'Urgent' ? 'bg-red-100 text-red-800 border border-red-300' : 'bg-gray-100 text-gray-700 border border-gray-300'
+                        }`}>
+                          {note.priority || 'Normal'}
+                        </span>
+                        <span className="text-sm font-medium text-gray-900 break-words">{note.text}</span>
+                      </div>
+                      <div className="text-[11px] text-gray-500">
+                        By <strong className="uppercase">{note.created_by || 'staff'}</strong> • {formatDateTimeDDMMYYYY(note.created_at)}
+                        {note.status === 'done' && note.done_at ? ` • Done ${formatDateTimeDDMMYYYY(note.done_at)}` : ''}
+                      </div>
+                    </div>
+                    {note.status !== 'done' && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onMarkDone(note); }}
+                        className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-xs font-semibold min-h-[40px] md:min-h-0"
+                      >
+                        Mark done
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ITEM 5A: PURE CANVAS DRAWING PAD (SketchPadModal + Vector Renderer + Viewer)
+    // =========================================================================
+    function renderVectorStrokesToCtx(ctx, strokes, width, height, opts = {}) {
+      const { showGrid = false, gridSize = 24, selectedId = null } = opts;
+      ctx.save();
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+
+      if (showGrid) {
+        ctx.strokeStyle = '#e5e7eb';
+        ctx.lineWidth = 1;
+        for (let x = 0; x <= width; x += gridSize) {
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
+        }
+        for (let y = 0; y <= height; y += gridSize) {
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
+        }
+      }
+
+      (strokes || []).forEach((s) => {
+        ctx.save();
+        ctx.strokeStyle = s.color || '#111827';
+        ctx.fillStyle = s.color || '#111827';
+        ctx.lineWidth = s.width || 3;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        if (s.type === 'pen' && s.pts && s.pts.length > 0) {
+          ctx.beginPath();
+          ctx.moveTo(s.pts[0].x, s.pts[0].y);
+          for (let i = 1; i < s.pts.length; i++) ctx.lineTo(s.pts[i].x, s.pts[i].y);
+          ctx.stroke();
+        } else if (s.type === 'line') {
+          ctx.beginPath();
+          ctx.moveTo(s.x1, s.y1);
+          ctx.lineTo(s.x2, s.y2);
+          ctx.stroke();
+        } else if (s.type === 'polyline' && s.pts && s.pts.length > 1) {
+          ctx.beginPath();
+          ctx.moveTo(s.pts[0].x, s.pts[0].y);
+          for (let i = 1; i < s.pts.length; i++) ctx.lineTo(s.pts[i].x, s.pts[i].y);
+          ctx.stroke();
+        } else if (s.type === 'curve') {
+          ctx.beginPath();
+          ctx.moveTo(s.x1, s.y1);
+          ctx.quadraticCurveTo(s.cx, s.cy, s.x2, s.y2);
+          ctx.stroke();
+        } else if (s.type === 'rect') {
+          ctx.strokeRect(s.x1, s.y1, s.x2 - s.x1, s.y2 - s.y1);
+        } else if (s.type === 'circle') {
+          const r = Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+          ctx.beginPath();
+          ctx.arc(s.x1, s.y1, r, 0, Math.PI * 2);
+          ctx.stroke();
+        } else if (s.type === 'text') {
+          ctx.font = `bold ${Math.max(15, (s.width || 3) * 5)}px system-ui, sans-serif`;
+          ctx.fillText(s.text || '', s.x, s.y);
+        }
+
+        if (selectedId && s.id === selectedId) {
+          ctx.strokeStyle = '#d97706';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([5, 4]);
+          const b = getStrokeBounds(s);
+          ctx.strokeRect(b.minX - 6, b.minY - 6, (b.maxX - b.minX) + 12, (b.maxY - b.minY) + 12);
+        }
+        ctx.restore();
+      });
+      ctx.restore();
+    }
+
+    function getStrokeBounds(s) {
+      if (s.type === 'pen' || s.type === 'polyline') {
+        const xs = (s.pts || []).map((p) => p.x);
+        const ys = (s.pts || []).map((p) => p.y);
+        return { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) };
+      }
+      if (s.type === 'circle') {
+        const r = Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+        return { minX: s.x1 - r, minY: s.y1 - r, maxX: s.x1 + r, maxY: s.y1 + r };
+      }
+      if (s.type === 'curve') {
+        return {
+          minX: Math.min(s.x1, s.x2, s.cx), minY: Math.min(s.y1, s.y2, s.cy),
+          maxX: Math.max(s.x1, s.x2, s.cx), maxY: Math.max(s.y1, s.y2, s.cy)
+        };
+      }
+      if (s.type === 'text') {
+        const w = Math.max(40, (s.text || '').length * 10);
+        return { minX: s.x, minY: s.y - 18, maxX: s.x + w, maxY: s.y + 6 };
+      }
+      return { minX: Math.min(s.x1, s.x2), minY: Math.min(s.y1, s.y2), maxX: Math.max(s.x1, s.x2), maxY: Math.max(s.y1, s.y2) };
+    }
+
+    function translateStroke(s, dx, dy) {
+      if (s.type === 'pen' || s.type === 'polyline') return { ...s, pts: s.pts.map((p) => ({ x: p.x + dx, y: p.y + dy })) };
+      if (s.type === 'curve') return { ...s, x1: s.x1 + dx, y1: s.y1 + dy, x2: s.x2 + dx, y2: s.y2 + dy, cx: s.cx + dx, cy: s.cy + dy };
+      if (s.type === 'text') return { ...s, x: s.x + dx, y: s.y + dy };
+      return { ...s, x1: s.x1 + dx, y1: s.y1 + dy, x2: s.x2 + dx, y2: s.y2 + dy };
+    }
+
+    function hitTestStroke(s, x, y, tol = 14) {
+      const b = getStrokeBounds(s);
+      return x >= b.minX - tol && x <= b.maxX + tol && y >= b.minY - tol && y <= b.maxY + tol;
+    }
+
+    function buildSketchThumbnail(strokes, showGrid) {
+      const c = document.createElement('canvas');
+      c.width = 320;
+      c.height = 200;
+      const ctx = c.getContext('2d');
+      ctx.scale(320 / 960, 200 / 600);
+      renderVectorStrokesToCtx(ctx, strokes, 960, 600, { showGrid });
+      return c.toDataURL('image/jpeg', 0.65);
+    }
+
+    function SketchViewerModal({ sketch, onEdit, onClose }) {
+      const canvasRef = useRef(null);
+      useEffect(() => {
+        if (!canvasRef.current || !sketch) return;
+        const ctx = canvasRef.current.getContext('2d');
+        renderVectorStrokesToCtx(ctx, sketch.strokes || [], 960, 600, { showGrid: !!sketch.grid });
+      }, [sketch]);
+
+      const handleDownloadPNG = () => {
+        if (!canvasRef.current) return;
+        const a = document.createElement('a');
+        a.href = canvasRef.current.toDataURL('image/png');
+        a.download = `${(sketch.title || 'sofa_sketch').replace(/\s+/g, '_')}.png`;
+        a.click();
+      };
+
+      const handlePrintSketch = () => {
+        if (!canvasRef.current) return;
+        const imgUrl = canvasRef.current.toDataURL('image/png');
+        const w = window.open('', '_blank', 'width=900,height=650');
+        if (!w) return;
+        w.document.write(`<html><head><title>${sketch.title || 'Sketch'}</title></head><body style="margin:0;text-align:center;"><h3 style="font-family:sans-serif;">${sketch.title || 'Order Sketch'}</h3><img src="${imgUrl}" style="max-width:100%;border:1px solid #000;" onload="window.print();"/></body></html>`);
+        w.document.close();
+      };
+
+      return (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-3">
+          <div className="bg-white rounded-md border border-gray-300 max-w-4xl w-full p-4 shadow-2xl space-y-3">
+            <div className="flex justify-between items-center border-b pb-2">
+              <h3 className="font-bold text-base text-gray-900">{sketch.title || 'Sofa Sketch'}</h3>
+              <button onClick={onClose} className="p-2 min-w-[44px] min-h-[44px] hover:bg-gray-100 rounded inline-flex items-center justify-center">
+                <Icon name="X" size={18} />
+              </button>
+            </div>
+            <div className="bg-gray-100 p-2 rounded border overflow-auto max-h-[70vh] flex justify-center">
+              <canvas ref={canvasRef} width={960} height={600} className="bg-white border border-gray-300 max-w-full h-auto" />
+            </div>
+            <div className="flex flex-wrap gap-2 justify-end">
+              {onEdit && (
+                <button type="button" onClick={onEdit} className="px-3.5 py-2 bg-amber-700 text-white rounded text-xs font-bold min-h-[44px]">
+                  Edit Sketch
+                </button>
+              )}
+              <button type="button" onClick={handleDownloadPNG} className="px-3.5 py-2 bg-gray-900 text-white rounded text-xs font-bold inline-flex items-center gap-1.5 min-h-[44px]">
+                <Icon name="Download" size={14} /> Download PNG
+              </button>
+              <button type="button" onClick={handlePrintSketch} className="px-3.5 py-2 bg-white border border-gray-300 text-gray-800 rounded text-xs font-bold inline-flex items-center gap-1.5 min-h-[44px]">
+                <Icon name="Printer" size={14} /> Print
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function SketchPadModal({ initialSketch, onSave, onClose }) {
+      const CANVAS_W = 960;
+      const CANVAS_H = 600;
+      const GRID_SIZE = 24;
+
+      const [title, setTitle] = useState(initialSketch?.title || 'Sofa Layout Sketch');
+      const [tool, setTool] = useState('pen'); // pen | line | polyline | curve | rect | circle | text | eraser | select
+      const [color, setColor] = useState('#111827');
+      const [thickness, setThickness] = useState(3);
+      const [showGrid, setShowGrid] = useState(initialSketch?.grid !== undefined ? !!initialSketch.grid : true);
+      const [snapToGrid, setSnapToGrid] = useState(true);
+
+      const [strokes, setStrokes] = useState(() => (initialSketch?.strokes ? JSON.parse(JSON.stringify(initialSketch.strokes)) : []));
+      const [history, setHistory] = useState(() => [initialSketch?.strokes ? JSON.parse(JSON.stringify(initialSketch.strokes)) : []]);
+      const [histIdx, setHistIdx] = useState(0);
+
+      const [draftStroke, setDraftStroke] = useState(null);
+      const [curveStage, setCurveStage] = useState(null); // { x1, y1, x2, y2, cx, cy } while dragging bend
+      const [polyPts, setPolyPts] = useState([]);
+      const [selectedId, setSelectedId] = useState(null);
+
+      // Zoom & Pan state
+      const [zoom, setZoom] = useState(1);
+      const [pan, setPan] = useState({ x: 0, y: 0 });
+      const pointersRef = useRef(new Map());
+      const pinchRef = useRef(null);
+      const dragStartRef = useRef(null);
+      const canvasRef = useRef(null);
+
+      const commitStrokes = (nextStrokes) => {
+        const trimmed = history.slice(0, histIdx + 1);
+        const nextHist = [...trimmed, nextStrokes];
+        setStrokes(nextStrokes);
+        setHistory(nextHist);
+        setHistIdx(nextHist.length - 1);
+      };
+
+      const undo = () => {
+        if (histIdx <= 0) return;
+        const ni = histIdx - 1;
+        setHistIdx(ni);
+        setStrokes(history[ni]);
+        setSelectedId(null);
+      };
+
+      const redo = () => {
+        if (histIdx >= history.length - 1) return;
+        const ni = histIdx + 1;
+        setHistIdx(ni);
+        setStrokes(history[ni]);
+        setSelectedId(null);
+      };
+
+      const snap = (v) => (snapToGrid && showGrid ? Math.round(v / GRID_SIZE) * GRID_SIZE : Math.round(v));
+
+      const toCanvasPoint = (e) => {
+        const rect = canvasRef.current.getBoundingClientRect();
+        const rawX = ((e.clientX - rect.left) / rect.width) * CANVAS_W;
+        const rawY = ((e.clientY - rect.top) / rect.height) * CANVAS_H;
+        const x = (rawX - pan.x) / zoom;
+        const y = (rawY - pan.y) / zoom;
+        return { x: snap(x), y: snap(y), rawX: x, rawY: y };
+      };
+
+      useEffect(() => {
+        const c = canvasRef.current;
+        if (!c) return;
+        const ctx = c.getContext('2d');
+        ctx.save();
+        ctx.fillStyle = '#e5e7eb';
+        ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+        ctx.translate(pan.x, pan.y);
+        ctx.scale(zoom, zoom);
+
+        const all = [...strokes];
+        if (draftStroke) all.push(draftStroke);
+        if (curveStage) all.push({ ...curveStage, type: 'curve', color, width: thickness });
+        if (polyPts.length > 0) all.push({ id: 'poly-draft', type: 'polyline', pts: polyPts, color, width: thickness });
+
+        renderVectorStrokesToCtx(ctx, all, CANVAS_W, CANVAS_H, { showGrid, gridSize: GRID_SIZE, selectedId });
+
+        // Draw Bezier control handle if adjusting curve
+        if (curveStage) {
+          ctx.strokeStyle = '#d97706';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(curveStage.x1, curveStage.y1);
+          ctx.lineTo(curveStage.cx, curveStage.cy);
+          ctx.lineTo(curveStage.x2, curveStage.y2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#d97706';
+          ctx.beginPath();
+          ctx.arc(curveStage.cx, curveStage.cy, 7, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }, [strokes, draftStroke, curveStage, polyPts, showGrid, selectedId, zoom, pan, color, thickness]);
+
+      const handlePointerDown = (e) => {
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+        // Two-finger pinch-zoom & pan
+        if (pointersRef.current.size === 2) {
+          const pts = Array.from(pointersRef.current.values());
+          const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+          const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+          pinchRef.current = { dist, mid, startZoom: zoom, startPan: { ...pan } };
+          setDraftStroke(null);
+          return;
+        }
+
+        const pt = toCanvasPoint(e);
+
+        if (curveStage) {
+          // Finish curve bend placement on pointer down/drag
+          dragStartRef.current = { mode: 'curve_bend' };
+          setCurveStage((c) => ({ ...c, cx: pt.x, cy: pt.y }));
+          return;
+        }
+
+        if (tool === 'text') {
+          const label = prompt('Enter measurement or text label (e.g. 84" or Step 6"x4"):');
+          if (label && label.trim()) {
+            commitStrokes([...strokes, { id: newId(), type: 'text', x: pt.x, y: pt.y, text: label.trim(), color, width: thickness }]);
+          }
+          return;
+        }
+
+        if (tool === 'polyline') {
+          setPolyPts((prev) => [...prev, { x: pt.x, y: pt.y }]);
+          return;
+        }
+
+        if (tool === 'eraser') {
+          const hit = [...strokes].reverse().find((s) => hitTestStroke(s, pt.rawX, pt.rawY));
+          if (hit) commitStrokes(strokes.filter((s) => s.id !== hit.id));
+          dragStartRef.current = { mode: 'erase' };
+          return;
+        }
+
+        if (tool === 'select') {
+          const hit = [...strokes].reverse().find((s) => hitTestStroke(s, pt.rawX, pt.rawY));
+          setSelectedId(hit ? hit.id : null);
+          if (hit) dragStartRef.current = { mode: 'move', id: hit.id, lastX: pt.rawX, lastY: pt.rawY, moved: false };
+          return;
+        }
+
+        if (tool === 'pen') {
+          setDraftStroke({ id: newId(), type: 'pen', color, width: thickness, pts: [{ x: pt.rawX, y: pt.rawY }] });
+        } else if (tool === 'line' || tool === 'rect' || tool === 'circle' || tool === 'curve') {
+          setDraftStroke({ id: newId(), type: tool, color, width: thickness, x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y, cx: pt.x, cy: pt.y });
+        }
+      };
+
+      const handlePointerMove = (e) => {
+        if (!pointersRef.current.has(e.pointerId)) return;
+        pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+        if (pointersRef.current.size === 2 && pinchRef.current) {
+          const pts = Array.from(pointersRef.current.values());
+          const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+          const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+          const nextZoom = Math.min(3, Math.max(0.5, pinchRef.current.startZoom * (dist / Math.max(10, pinchRef.current.dist))));
+          setZoom(nextZoom);
+          setPan({
+            x: pinchRef.current.startPan.x + (mid.x - pinchRef.current.mid.x),
+            y: pinchRef.current.startPan.y + (mid.y - pinchRef.current.mid.y)
+          });
+          return;
+        }
+
+        const pt = toCanvasPoint(e);
+
+        if (dragStartRef.current?.mode === 'curve_bend' && curveStage) {
+          setCurveStage((c) => ({ ...c, cx: pt.x, cy: pt.y }));
+          return;
+        }
+
+        if (dragStartRef.current?.mode === 'erase') {
+          const hit = [...strokes].reverse().find((s) => hitTestStroke(s, pt.rawX, pt.rawY));
+          if (hit) commitStrokes(strokes.filter((s) => s.id !== hit.id));
+          return;
+        }
+
+        if (dragStartRef.current?.mode === 'move') {
+          const dx = pt.rawX - dragStartRef.current.lastX;
+          const dy = pt.rawY - dragStartRef.current.lastY;
+          dragStartRef.current.lastX = pt.rawX;
+          dragStartRef.current.lastY = pt.rawY;
+          dragStartRef.current.moved = true;
+          const tid = dragStartRef.current.id;
+          setStrokes((prev) => prev.map((s) => (s.id === tid ? translateStroke(s, dx, dy) : s)));
+          return;
+        }
+
+        if (!draftStroke) return;
+        if (draftStroke.type === 'pen') {
+          setDraftStroke((d) => ({ ...d, pts: [...d.pts, { x: pt.rawX, y: pt.rawY }] }));
+        } else {
+          setDraftStroke((d) => ({ ...d, x2: pt.x, y2: pt.y, cx: Math.round((d.x1 + pt.x) / 2), cy: Math.round((d.y1 + pt.y) / 2) }));
+        }
+      };
+
+      const handlePointerUp = (e) => {
+        pointersRef.current.delete(e.pointerId);
+        if (pointersRef.current.size < 2) pinchRef.current = null;
+
+        if (dragStartRef.current?.mode === 'curve_bend' && curveStage) {
+          commitStrokes([...strokes, { id: newId(), type: 'curve', color, width: thickness, ...curveStage }]);
+          setCurveStage(null);
+          dragStartRef.current = null;
+          return;
+        }
+
+        if (dragStartRef.current?.mode === 'move') {
+          if (dragStartRef.current.moved) commitStrokes(strokes);
+          dragStartRef.current = null;
+          return;
+        }
+        dragStartRef.current = null;
+
+        if (!draftStroke) return;
+        if (draftStroke.type === 'curve') {
+          if (Math.hypot(draftStroke.x2 - draftStroke.x1, draftStroke.y2 - draftStroke.y1) > 8) {
+            setCurveStage({ x1: draftStroke.x1, y1: draftStroke.y1, x2: draftStroke.x2, y2: draftStroke.y2, cx: draftStroke.cx, cy: draftStroke.cy - 40 });
+          }
+          setDraftStroke(null);
+          return;
+        }
+        commitStrokes([...strokes, draftStroke]);
+        setDraftStroke(null);
+      };
+
+      const finishPolyline = () => {
+        if (polyPts.length > 1) {
+          commitStrokes([...strokes, { id: newId(), type: 'polyline', pts: polyPts, color, width: thickness }]);
+        }
+        setPolyPts([]);
+      };
+
+      const handleSaveSketch = () => {
+        let finalStrokes = strokes;
+        if (polyPts.length > 1) {
+          finalStrokes = [...strokes, { id: newId(), type: 'polyline', pts: polyPts, color, width: thickness }];
+        }
+        const thumb = buildSketchThumbnail(finalStrokes, showGrid);
+        onSave({
+          id: initialSketch?.id || newId(),
+          title: title.trim() || 'Sofa Sketch',
+          grid: showGrid,
+          strokes: finalStrokes,
+          thumb,
+          created_at: initialSketch?.created_at || new Date().toISOString()
+        });
+      };
+
+      const handleDownloadPNG = () => {
+        const c = document.createElement('canvas');
+        c.width = CANVAS_W; c.height = CANVAS_H;
+        renderVectorStrokesToCtx(c.getContext('2d'), strokes, CANVAS_W, CANVAS_H, { showGrid });
+        const a = document.createElement('a');
+        a.href = c.toDataURL('image/png');
+        a.download = `${(title || 'sofa_sketch').replace(/\s+/g, '_')}.png`;
+        a.click();
+      };
+
+      const TOOLS = [
+        { id: 'pen', label: 'Pen', icon: 'Pencil' },
+        { id: 'line', label: 'Line', icon: 'Minus' },
+        { id: 'polyline', label: 'Poly', icon: 'Spline' },
+        { id: 'curve', label: 'Curve', icon: 'GitBranch' },
+        { id: 'rect', label: 'Rect', icon: 'Square' },
+        { id: 'circle', label: 'Circle', icon: 'Circle' },
+        { id: 'text', label: 'Text', icon: 'Type' },
+        { id: 'select', label: 'Move', icon: 'Move' },
+        { id: 'eraser', label: 'Erase', icon: 'Eraser' }
+      ];
+
+      return (
+        <div className="fixed inset-0 bg-gray-900 z-50 flex flex-col">
+          {/* Top Bar */}
+          <div className="bg-gray-900 text-white px-3 py-2 border-b border-gray-700 flex flex-wrap justify-between items-center gap-2">
+            <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Sketch Name (e.g. L-Shape Step Cut)"
+                className="bg-gray-800 border border-gray-600 rounded px-2.5 py-1.5 text-sm text-white w-full max-w-xs"
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button type="button" onClick={undo} disabled={histIdx <= 0} className="px-2.5 py-2 bg-gray-800 disabled:opacity-40 rounded text-xs font-semibold min-h-[44px] inline-flex items-center gap-1">
+                <Icon name="Undo2" size={15} /> Undo
+              </button>
+              <button type="button" onClick={redo} disabled={histIdx >= history.length - 1} className="px-2.5 py-2 bg-gray-800 disabled:opacity-40 rounded text-xs font-semibold min-h-[44px] inline-flex items-center gap-1">
+                <Icon name="Redo2" size={15} /> Redo
+              </button>
+              <button type="button" onClick={() => { if (confirm('Clear entire drawing?')) { commitStrokes([]); setPolyPts([]); setCurveStage(null); } }} className="px-2.5 py-2 bg-gray-800 hover:bg-red-900 rounded text-xs font-semibold min-h-[44px]">
+                Clear
+              </button>
+              <button type="button" onClick={handleDownloadPNG} className="px-2.5 py-2 bg-gray-800 rounded text-xs font-semibold min-h-[44px] inline-flex items-center gap-1">
+                <Icon name="Download" size={15} /> PNG
+              </button>
+              <button type="button" onClick={handleSaveSketch} className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-bold min-h-[44px] inline-flex items-center gap-1">
+                <Icon name="Check" size={15} /> Save Sketch
+              </button>
+              <button type="button" onClick={onClose} className="px-2.5 py-2 bg-gray-800 rounded text-xs font-semibold min-h-[44px]">
+                <Icon name="X" size={18} />
+              </button>
+            </div>
+          </div>
+
+          {/* Tools Bar */}
+          <div className="bg-white border-b border-gray-300 px-3 py-2 flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap gap-1">
+              {TOOLS.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => { if (polyPts.length > 1) finishPolyline(); setCurveStage(null); setTool(t.id); }}
+                  className={`px-2.5 py-1.5 rounded text-xs font-bold border min-h-[44px] inline-flex items-center gap-1 ${
+                    tool === t.id ? 'bg-gray-900 text-white border-gray-900' : 'bg-gray-50 text-gray-800 border-gray-300 hover:bg-gray-100'
+                  }`}
+                >
+                  <Icon name={t.icon} size={14} /> {t.label}
+                </button>
+              ))}
+              {polyPts.length > 0 && (
+                <button type="button" onClick={finishPolyline} className="px-3 py-1.5 bg-emerald-700 text-white rounded text-xs font-bold min-h-[44px]">
+                  Finish Poly ({polyPts.length} pts)
+                </button>
+              )}
+              {curveStage && (
+                <span className="px-2.5 py-2 bg-amber-100 text-amber-900 rounded text-xs font-bold">
+                  Drag on canvas to bend curve, release to lock
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1.5 border-l border-gray-300 pl-2">
+              {['#111827', '#dc2626', '#2563eb', '#b45309', '#059669'].map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setColor(c)}
+                  style={{ backgroundColor: c }}
+                  className={`w-7 h-7 rounded-full border-2 ${color === c ? 'border-amber-500 scale-110' : 'border-gray-300'}`}
+                />
+              ))}
+            </div>
+
+            <div className="flex items-center gap-1 border-l border-gray-300 pl-2">
+              {[2, 4, 6].map((th) => (
+                <button
+                  key={th}
+                  type="button"
+                  onClick={() => setThickness(th)}
+                  className={`px-2 py-1 rounded text-xs font-bold border min-h-[36px] ${thickness === th ? 'bg-gray-900 text-white' : 'bg-white text-gray-700'}`}
+                >
+                  {th}px
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2 border-l border-gray-300 pl-2 text-xs">
+              <label className="inline-flex items-center gap-1 font-semibold cursor-pointer">
+                <input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} /> Grid
+              </label>
+              <label className="inline-flex items-center gap-1 font-semibold cursor-pointer">
+                <input type="checkbox" checked={snapToGrid} onChange={(e) => setSnapToGrid(e.target.checked)} /> Snap
+              </label>
+              <button type="button" onClick={() => setZoom((z) => Math.min(3, +(z + 0.25).toFixed(2)))} className="px-2 py-1 border rounded font-bold">+</button>
+              <button type="button" onClick={() => setZoom((z) => Math.max(0.5, +(z - 0.25).toFixed(2)))} className="px-2 py-1 border rounded font-bold">-</button>
+              <button type="button" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} className="px-2 py-1 border rounded text-[11px]">{Math.round(zoom * 100)}%</button>
+            </div>
+          </div>
+
+          {/* Interactive Canvas Surface */}
+          <div className="flex-1 bg-gray-200 overflow-hidden flex items-center justify-center p-2">
+            <canvas
+              ref={canvasRef}
+              width={CANVAS_W}
+              height={CANVAS_H}
+              style={{ touchAction: 'none' }}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              onPointerCancel={handlePointerUp}
+              onDoubleClick={() => { if (tool === 'polyline') finishPolyline(); }}
+              className="bg-white border-2 border-gray-400 shadow-lg max-w-full max-h-full cursor-crosshair"
+            />
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
     // KEYBOARD-FIRST ONE-SCREEN ORDER ENTRY + REVIEW & CONFIRM FLOW
     // (Stacks cleanly in 1 column on mobile < 768px, 3-col split on desktop)
     // =========================================================================
-    function OrderEntryScreen({ existingOrder, allOrders, salesmen, currentRole, onCancel, onCommitOrder }) {
+    function OrderEntryScreen({ existingOrder, allOrders, salesmen, currentRole, orderNotes = [], onCancel, onCommitOrder }) {
       const isConfirmed = existingOrder && !['Measurement Pending', 'Estimate Given'].includes(existingOrder.status);
       const canEditSpecs = !isConfirmed || currentRole === 'admin';
 
@@ -721,6 +1649,7 @@
           }
         }
         return {
+          order_type: existingOrder?.order_type || 'Sofa Cover',
           customer_name: existingOrder?.customer_name || '',
           mobile: existingOrder?.mobile || '',
           address: existingOrder?.address || '',
@@ -729,18 +1658,24 @@
           visit_staff_name: existingOrder?.visit_staff_name || '',
           visit_charge: existingOrder?.visit_charge || 0,
           lines: existingOrder ? linesToFormLines(existingOrder) : [newLine('Seating'), newLine('Back')],
+          sketches: Array.isArray(existingOrder?.sketches) ? existingOrder.sketches : [],
           tailor_notes: existingOrder?.tailor_notes || '',
           total_pcs: existingOrder?.total_pcs || '',
           advance_amount: existingOrder?.advance_amount || 0,
           payment_mode: existingOrder?.payment_mode || 'Cash',
           salesman_name: existingOrder?.salesman_name || (salesmen[0] || ''),
-          promised_date: existingOrder?.promised_date || ''
+          promised_date: existingOrder?.promised_date || '',
+          important_note: '',
+          important_note_priority: 'Normal'
         };
       });
 
       const [draftSavedAt, setDraftSavedAt] = useState(null);
       const [reviewMode, setReviewMode] = useState(false);
       const [errorMsg, setErrorMsg] = useState('');
+      const [sketchPadOpen, setSketchPadOpen] = useState(false);
+      const [editingSketch, setEditingSketch] = useState(null);
+      const [viewingSketch, setViewingSketch] = useState(null);
 
       useEffect(() => {
         if (!existingOrder) {
@@ -800,7 +1735,28 @@
         return { ...l, rows: [...l.rows, { expr: '', wid: last ? last.wid : '' }] };
       }));
       const removeRow = (li, ri) => setLines((ls) => ls.map((l, i) => (i === li ? { ...l, rows: l.rows.length > 1 ? l.rows.filter((_, j) => j !== ri) : l.rows } : l)));
-      const addLine = (part) => setLines((ls) => [...ls, newLine(part)]);
+      const addLine = (part) => setLines((ls) => [...ls, newLine(part, form.order_type === 'Fabric Only (Meter)' ? 'Meter' : undefined)]);
+      const handleOrderTypeChange = (nextType) => {
+        setForm((f) => {
+          const allEmpty = (f.lines || []).every((l) => !l.design && !l.rate && !l.fabric_meters && l.rows.every((r) => !r.expr));
+          let nextLines = f.lines;
+          if (allEmpty) {
+            if (nextType === 'Cushion/Pillow Cover') nextLines = [newLine('Cushion Cover', 'Meter')];
+            else if (nextType === 'Fabric Only (Meter)') nextLines = [newLine('Fabric', 'Meter')];
+            else nextLines = [newLine('Seating', 'Inches'), newLine('Back', 'Inches')];
+          }
+          return { ...f, order_type: nextType, lines: nextLines };
+        });
+      };
+      const handleSamplePhotoUpload = async (li, file) => {
+        if (!file) return;
+        try {
+          const dataUrl = await compressImageUnder100KB(file);
+          updateLine(li, { sample_photo: dataUrl });
+        } catch (err) {
+          alert('Could not attach sample photo: ' + err.message);
+        }
+      };
       const removeLine = (li) => setLines((ls) => (ls.length > 1 ? ls.filter((_, i) => i !== li) : ls));
       const usedWidths = Array.from(new Set(form.lines.flatMap((l) => l.rows.map((r) => String(r.wid || '').trim())).filter(Boolean)));
       const onExprEnter = (e, li, ri) => {
@@ -838,10 +1794,13 @@
           return;
         }
         const nextStatus = targetStatus === 'Confirmed' ? 'Cutting Pending' : targetStatus;
+        const { important_note, important_note_priority, ...cleanForm } = form;
         const payload = {
-          ...form,
+          ...cleanForm,
+          order_type: form.order_type || 'Sofa Cover',
           ...deriveLegacy(calc.lines),
           lines: calc.lines.map(storeLine),
+          sketches: Array.isArray(form.sketches) ? form.sketches : [],
           seating_total_inches: calc.seatingInches,
           seating_feet: calc.seatingFeet,
           back_total_raw: calc.backRaw,
@@ -854,7 +1813,11 @@
           status: nextStatus
         };
         if (!existingOrder) localStorage.removeItem(draftKey);
-        onCommitOrder(payload, targetStatus === 'Confirmed', afterAction);
+        onCommitOrder(payload, targetStatus === 'Confirmed', afterAction, {
+          manualNote: important_note && important_note.trim() ? { text: important_note.trim(), priority: important_note_priority || 'Normal' } : null,
+          advanceZeroOnConfirm: targetStatus === 'Confirmed' && (parseFloat(form.advance_amount) || 0) === 0,
+          hasPendingLine: calc.hasPendingLine
+        });
       };
 
       return (
@@ -886,8 +1849,9 @@
                     setForm({
                       customer_name: '', mobile: '', address: '', home_delivery: false,
                       measurement_source: 'Customer brought', visit_staff_name: '', visit_charge: 0,
-                      lines: [newLine('Seating'), newLine('Back')], tailor_notes: '', total_pcs: '',
-                      advance_amount: 0, payment_mode: 'Cash', salesman_name: salesmen[0] || '', promised_date: ''
+                      order_type: 'Sofa Cover', lines: [newLine('Seating'), newLine('Back')], sketches: [], tailor_notes: '', total_pcs: '',
+                      advance_amount: 0, payment_mode: 'Cash', salesman_name: salesmen[0] || '', promised_date: '',
+                      important_note: '', important_note_priority: 'Normal'
                     });
                   }}
                   className="text-xs text-gray-600 hover:text-gray-900 underline py-2 px-1"
@@ -907,6 +1871,42 @@
           {/* Split Screen: Form Left (2 cols on lg) + Live Estimate Right (1 col on lg, stacked 1 col on mobile) */}
           <div ref={formRef} className="p-4 md:p-5 grid grid-cols-1 lg:grid-cols-3 gap-5 md:gap-6">
             <div className="lg:col-span-2 space-y-5">
+              {/* Order Type Selector (Sofa Cover / Cushion-Pillow Cover / Fabric Only) */}
+              <div className="border border-gray-200 bg-gray-50 rounded p-3 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-gray-600">Order Type</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {['Sofa Cover', 'Cushion/Pillow Cover', 'Fabric Only (Meter)'].map((ot) => (
+                    <button
+                      key={ot}
+                      type="button"
+                      disabled={!canEditSpecs}
+                      onClick={() => handleOrderTypeChange(ot)}
+                      className={`px-3 py-1.5 rounded text-xs font-bold border min-h-[40px] md:min-h-0 ${
+                        (form.order_type || 'Sofa Cover') === ot
+                          ? 'bg-gray-900 text-white border-gray-900'
+                          : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'
+                      }`}
+                    >
+                      {ot}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {orderNotes.length > 0 && (
+                <div className="bg-amber-50 border border-amber-300 rounded p-3 space-y-1">
+                  <div className="text-xs font-bold uppercase text-amber-900 flex items-center gap-1.5">
+                    <Icon name="Pin" size={14} /> Order Important Notes
+                  </div>
+                  {orderNotes.map((n) => (
+                    <div key={n.id} className="text-xs text-gray-900">
+                      • <strong>[{n.priority}]</strong> {n.text}{' '}
+                      <span className="text-gray-500">({n.status === 'done' ? 'Done' : 'Open'} • {formatDateTimeDDMMYYYY(n.created_at)})</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {/* Section 1: Customer Details */}
               <div className="border border-gray-200 rounded p-3.5 md:p-4 space-y-3.5">
                 <div className="text-xs font-bold uppercase tracking-wider text-gray-500">1. Customer & Delivery Details</div>
@@ -1081,12 +2081,15 @@
                             <option>Seating</option>
                             <option>Back</option>
                             <option>Handle</option>
+                            <option>Cushion Cover</option>
+                            <option>Pillow Cover</option>
+                            <option>Fabric</option>
                             <option>Other</option>
                           </select>
                           {line.part === 'Other' && (
                             <input
                               disabled={!canEditSpecs}
-                              placeholder="Name (e.g. Cushion)"
+                              placeholder="Name (e.g. Bolster)"
                               className="border border-gray-300 rounded px-2.5 py-1 text-xs bg-white min-h-[44px] md:min-h-0"
                               value={line.other_name}
                               onChange={(e) => updateLine(li, { other_name: e.target.value })}
@@ -1098,8 +2101,9 @@
                             value={line.unit}
                             onChange={(e) => updateLine(li, { unit: e.target.value })}
                           >
-                            <option value="Inches">Inches</option>
+                            <option value="Inches">Inches → ft</option>
                             <option value="Pcs">Pcs</option>
+                            <option value="Meter">Meter (mtr)</option>
                           </select>
                         </div>
                         {form.lines.length > 1 && canEditSpecs && (
@@ -1109,12 +2113,12 @@
                         )}
                       </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                         <div className="md:col-span-2">
                           <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Design / Fabric Name & Shade *</label>
                           <input
                             disabled={!canEditSpecs}
-                            placeholder="e.g. Ronaldo Cream"
+                            placeholder="e.g. Marlo Blue / Ronaldo Cream"
                             className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100"
                             value={line.design}
                             onChange={(e) => updateLine(li, { design: e.target.value })}
@@ -1123,7 +2127,7 @@
                         </div>
                         <div>
                           <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">
-                            {line.unit === 'Inches' ? 'Rate per ft (₹)' : 'Rate per pc (₹)'}
+                            {line.unit === 'Inches' ? 'Rate / ft (₹)' : line.unit === 'Meter' ? 'Rate / mtr (₹)' : 'Rate / pc (₹)'}
                           </label>
                           <input
                             disabled={!canEditSpecs}
@@ -1135,7 +2139,92 @@
                             onKeyDown={(e) => handleFieldKeyDown(e)}
                           />
                         </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Stitching / Making (₹)</label>
+                          <input
+                            disabled={!canEditSpecs}
+                            type="number"
+                            placeholder="0"
+                            className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
+                            value={line.making_charge || ''}
+                            onChange={(e) => updateLine(li, { making_charge: e.target.value })}
+                            onKeyDown={(e) => handleFieldKeyDown(e)}
+                          />
+                        </div>
                       </div>
+
+                      {(isCushionPart(line.part) || line.unit === 'Meter' || form.order_type !== 'Sofa Cover') && (
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5 bg-white border border-gray-200 rounded p-2.5">
+                          <div>
+                            <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">Fabric (meters)</label>
+                            <input
+                              disabled={!canEditSpecs}
+                              type="number"
+                              step="0.05"
+                              placeholder="e.g. 1.75"
+                              className="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm tabular-nums"
+                              value={line.fabric_meters || ''}
+                              onChange={(e) => updateLine(li, { fabric_meters: e.target.value })}
+                            />
+                          </div>
+                          {(isCushionPart(line.part) || form.order_type === 'Cushion/Pillow Cover') && (
+                            <>
+                              <div>
+                                <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">No. of Covers</label>
+                                <input
+                                  disabled={!canEditSpecs}
+                                  type="number"
+                                  placeholder="e.g. 1"
+                                  className="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm tabular-nums"
+                                  value={line.covers_count || ''}
+                                  onChange={(e) => updateLine(li, { covers_count: e.target.value })}
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">Size L × W</label>
+                                <div className="flex gap-1">
+                                  <input
+                                    disabled={!canEditSpecs}
+                                    placeholder="21.5"
+                                    className="w-1/2 border border-gray-300 rounded px-1.5 py-1.5 text-xs tabular-nums"
+                                    value={line.size_l || ''}
+                                    onChange={(e) => updateLine(li, { size_l: e.target.value })}
+                                  />
+                                  <input
+                                    disabled={!canEditSpecs}
+                                    placeholder="31.5"
+                                    className="w-1/2 border border-gray-300 rounded px-1.5 py-1.5 text-xs tabular-nums"
+                                    value={line.size_w || ''}
+                                    onChange={(e) => updateLine(li, { size_w: e.target.value })}
+                                  />
+                                </div>
+                              </div>
+                              <div>
+                                <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">Size Unit</label>
+                                <select
+                                  disabled={!canEditSpecs}
+                                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-xs bg-white"
+                                  value={line.size_unit || 'in'}
+                                  onChange={(e) => updateLine(li, { size_unit: e.target.value })}
+                                >
+                                  <option value="in">Inches (in)</option>
+                                  <option value="cm">cm</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">Thickness / Insert</label>
+                                <input
+                                  disabled={!canEditSpecs}
+                                  placeholder='e.g. 4"'
+                                  className="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm"
+                                  value={line.thickness || ''}
+                                  onChange={(e) => updateLine(li, { thickness: e.target.value })}
+                                />
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
 
                       <div className="space-y-2">
                         {line.rows.map((row, ri) => (
@@ -1214,6 +2303,46 @@
                         </div>
                       </div>
 
+                      <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-gray-200">
+                        <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-gray-800 cursor-pointer min-h-[36px] md:min-h-0">
+                          <input
+                            type="checkbox"
+                            disabled={!canEditSpecs}
+                            className="w-4 h-4 accent-amber-700"
+                            checked={!!line.as_per_sample}
+                            onChange={(e) => updateLine(li, { as_per_sample: e.target.checked })}
+                          />
+                          As per sample
+                        </label>
+                        <input
+                          disabled={!canEditSpecs}
+                          placeholder="Sample / Special instruction (e.g. make as per sample, piping on border)..."
+                          className="flex-1 min-w-[200px] border border-gray-300 bg-white rounded px-2.5 py-1.5 text-xs"
+                          value={line.sample_note || ''}
+                          onChange={(e) => updateLine(li, { sample_note: e.target.value })}
+                        />
+                        {canEditSpecs && (
+                          <label className="px-2.5 py-1.5 bg-white border border-gray-300 hover:bg-gray-100 rounded text-xs font-semibold cursor-pointer inline-flex items-center gap-1">
+                            <Icon name="Camera" size={13} /> Sample Photo
+                            <input
+                              type="file"
+                              accept="image/*"
+                              capture="environment"
+                              className="hidden"
+                              onChange={(e) => handleSamplePhotoUpload(li, e.target.files?.[0])}
+                            />
+                          </label>
+                        )}
+                        {line.sample_photo && (
+                          <div className="inline-flex items-center gap-1.5">
+                            <img src={line.sample_photo} alt="Sample" className="h-9 w-12 object-cover rounded border border-gray-300" />
+                            {canEditSpecs && (
+                              <button type="button" onClick={() => updateLine(li, { sample_photo: '' })} className="text-[11px] text-red-700 underline">Remove</button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
                       <div className="text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2 tabular-nums">
                         {lc ? lc.text : ''}
                       </div>
@@ -1224,7 +2353,7 @@
                 {canEditSpecs && (
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs font-bold text-gray-600">Add line:</span>
-                    {['Seating', 'Back', 'Handle', 'Other'].map((pt) => (
+                    {['Seating', 'Back', 'Handle', 'Cushion Cover', 'Pillow Cover', 'Fabric', 'Other'].map((pt) => (
                       <button
                         key={pt}
                         type="button"
@@ -1241,8 +2370,17 @@
                   {calc.summaryLine}
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Cutting & Tailor Instructions (Printed on Sticker)</label>
+                <div className="space-y-3">
+                  <div className="flex flex-wrap justify-between items-center gap-2">
+                    <label className="block text-xs font-semibold text-gray-700 mobile-label">Cutting & Tailor Instructions (Printed on Sticker)</label>
+                    <button
+                      type="button"
+                      onClick={() => { setEditingSketch(null); setSketchPadOpen(true); }}
+                      className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 border border-amber-400 text-amber-950 rounded text-xs font-bold inline-flex items-center gap-1.5 min-h-[44px] md:min-h-0"
+                    >
+                      <Icon name="Pencil" size={14} /> Sketch / Drawing ({(form.sketches || []).length})
+                    </button>
+                  </div>
                   <textarea
                     rows={2}
                     placeholder="Piping colour, joint placement, elastic/lace instructions..."
@@ -1250,6 +2388,50 @@
                     value={form.tailor_notes}
                     onChange={(e) => setForm({ ...form, tailor_notes: e.target.value })}
                   />
+
+                  {(form.sketches || []).length > 0 && (
+                    <div className="bg-gray-50 border border-gray-200 rounded p-2.5 space-y-2">
+                      <div className="text-[11px] font-bold uppercase text-gray-600">Attached Drawings / Sketches (Tap to View / Print / Download)</div>
+                      <div className="flex flex-wrap gap-2.5">
+                        {form.sketches.map((sk) => (
+                          <div key={sk.id} className="bg-white border border-gray-300 rounded p-1.5 w-36 space-y-1">
+                            <img
+                              src={sk.thumb}
+                              alt={sk.title}
+                              onClick={() => setViewingSketch(sk)}
+                              className="w-full h-20 object-contain bg-white border border-gray-200 rounded cursor-pointer"
+                            />
+                            <div className="text-[11px] font-semibold truncate text-gray-800">{sk.title}</div>
+                            <div className="flex justify-between text-[11px]">
+                              <button type="button" onClick={() => { setEditingSketch(sk); setSketchPadOpen(true); }} className="text-amber-800 font-semibold hover:underline">Edit</button>
+                              <button type="button" onClick={() => setForm((f) => ({ ...f, sketches: f.sketches.filter((x) => x.id !== sk.id) }))} className="text-red-700 font-semibold hover:underline">Remove</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* ITEM 4: Important Note input for Admin & Sales Board */}
+                <div className="pt-3 border-t border-gray-200 space-y-2">
+                  <label className="block text-xs font-bold text-amber-900 uppercase">Important Note (Optional — pinned to Admin & Sales Notes Board)</label>
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                    <input
+                      placeholder="e.g. Confirm fabric shade before cutting / Call customer for balance..."
+                      className="sm:col-span-3 border border-gray-300 bg-white rounded px-3 py-2 text-sm"
+                      value={form.important_note}
+                      onChange={(e) => setForm({ ...form, important_note: e.target.value })}
+                    />
+                    <select
+                      className="border border-gray-300 bg-white rounded px-3 py-2 text-sm font-semibold"
+                      value={form.important_note_priority}
+                      onChange={(e) => setForm({ ...form, important_note_priority: e.target.value })}
+                    >
+                      <option value="Normal">Normal</option>
+                      <option value="Urgent">Urgent</option>
+                    </select>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1264,9 +2446,11 @@
 
                 <table className="w-full text-sm tabular-nums">
                   <tbody className="divide-y divide-gray-300">
-                    {calc.lines.filter((l) => l.raw > 0 || l.rate > 0).map((l) => (
+                    {calc.lines.filter((l) => l.raw > 0 || l.rate > 0 || l.making_charge > 0).map((l) => (
                       <tr key={l.id}>
-                        <td className="py-2 text-gray-600">{l.name} ({l.qtyStr} {l.unit === 'Inches' ? 'ft' : 'pcs'} × {formatINR(l.rate)})</td>
+                        <td className="py-2 text-gray-600">
+                          {l.name} ({l.qtyStr} {l.unitLbl} × {formatINR(l.rate)}{l.making_charge > 0 ? ` + Mak. ${formatINR(l.making_charge)}` : ''})
+                        </td>
                         <td className="py-2 text-right font-semibold text-gray-900">{formatINR(l.amount)}</td>
                       </tr>
                     ))}
@@ -1364,14 +2548,27 @@
                 </div>
 
                 <div className="bg-gray-50 border border-gray-200 rounded p-4 space-y-2 text-sm">
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Order Type:</span><strong className="text-right">{form.order_type || 'Sofa Cover'}</strong></div>
                   <div className="flex justify-between gap-2"><span className="text-gray-600">Customer:</span><strong className="text-right">{form.customer_name} ({form.mobile})</strong></div>
                   <div className="flex justify-between gap-2"><span className="text-gray-600">Pieces:</span><strong className="text-right">{form.total_pcs} Pcs</strong></div>
-                  {calc.lines.filter((l) => l.raw > 0 || l.design).map((l) => (
+                  {calc.lines.filter((l) => l.raw > 0 || l.design || l.making_charge > 0).map((l) => (
                     <div key={l.id} className="flex justify-between gap-2">
-                      <span className="text-gray-600">{l.name}{l.design ? ` — ${l.design}` : ''}{l.pending ? ' (measurement pending)' : ''}:</span>
-                      <strong className="text-right">{l.qtyStr} {l.unit === 'Inches' ? 'ft' : 'pcs'} = {formatINR(l.amount)}</strong>
+                      <span className="text-gray-600">
+                        {l.name}{l.design ? ` — ${l.design}` : ''}{lineExtraDetailsText(l) ? ` (${lineExtraDetailsText(l)})` : ''}{l.pending ? ' [PENDING]' : ''}:
+                      </span>
+                      <strong className="text-right">{l.qtyStr} {l.unitLbl}{l.making_charge > 0 ? ` + Mak. ${formatINR(l.making_charge)}` : ''} = {formatINR(l.amount)}</strong>
                     </div>
                   ))}
+                  {(form.sketches || []).length > 0 && (
+                    <div className="pt-2 border-t border-gray-200">
+                      <div className="text-xs font-semibold text-gray-600 mb-1">Attached Sketches ({form.sketches.length}):</div>
+                      <div className="flex flex-wrap gap-2">
+                        {form.sketches.map((sk) => (
+                          <img key={sk.id} src={sk.thumb} alt={sk.title} onClick={() => setViewingSketch(sk)} className="h-14 w-24 object-contain bg-white border border-gray-300 rounded cursor-pointer" />
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <div className="flex justify-between gap-2"><span className="text-gray-600">Promised Delivery:</span><strong className="text-right">{formatDateDDMMYYYY(form.promised_date)}</strong></div>
                   <div className="flex justify-between gap-2"><span className="text-gray-600">Salesman:</span><strong className="text-right">{form.salesman_name}</strong></div>
                   <div className="border-t border-gray-300 pt-2 flex flex-wrap justify-between gap-2 text-base tabular-nums">
@@ -1403,6 +2600,30 @@
               </div>
             </div>
           )}
+
+          {sketchPadOpen && (
+            <SketchPadModal
+              initialSketch={editingSketch}
+              onClose={() => { setSketchPadOpen(false); setEditingSketch(null); }}
+              onSave={(savedSketch) => {
+                setForm((f) => {
+                  const list = Array.isArray(f.sketches) ? f.sketches : [];
+                  const exists = list.some((x) => x.id === savedSketch.id);
+                  return { ...f, sketches: exists ? list.map((x) => (x.id === savedSketch.id ? savedSketch : x)) : [...list, savedSketch] };
+                });
+                setSketchPadOpen(false);
+                setEditingSketch(null);
+              }}
+            />
+          )}
+
+          {viewingSketch && (
+            <SketchViewerModal
+              sketch={viewingSketch}
+              onEdit={() => { setEditingSketch(viewingSketch); setViewingSketch(null); setSketchPadOpen(true); }}
+              onClose={() => setViewingSketch(null)}
+            />
+          )}
         </div>
       );
     }
@@ -1413,9 +2634,11 @@
     function ShopFloorMobileView({ db, saveDb, currentRole, scannedOrderNo }) {
       const [selectedTailor, setSelectedTailor] = useState({});
       const [undoState, setUndoState] = useState(null);
+      const [viewingSketch, setViewingSketch] = useState(null);
 
       const queueOrders = useMemo(() => {
         const list = db.orders.filter((o) => {
+          if (o.is_archived || o.is_trashed) return false;
           if (currentRole === 'cutting') return o.status === 'Cutting Pending';
           if (currentRole === 'tailor_1' || currentRole === 'tailor_2') {
             return o.status === 'With Tailor' && o.assigned_tailor === currentRole;
@@ -1559,16 +2782,34 @@
                   </div>
 
                   <div className="bg-gray-50 border border-gray-200 rounded p-3 space-y-1.5 text-sm tabular-nums">
+                    {order.order_type && order.order_type !== 'Sofa Cover' && (
+                      <div className="text-xs font-bold uppercase text-amber-900">Type: {order.order_type}</div>
+                    )}
                     {getOrderLines(order).map((l, i) => (
-                      <div key={i}>
-                        <span className="text-gray-500 font-semibold">{linePartName(l)}:</span> <strong>{lineRowsText(l)}</strong> ({Number(l.qty) || 0} {l.unit === 'Pcs' ? 'pcs' : 'ft'})
-                        {l.design ? <span className="text-gray-600"> — {l.design}</span> : null}
-                        {l.pending ? <span className="text-red-700 font-bold"> — MEASUREMENT PENDING</span> : null}
+                      <div key={i} className="space-y-1">
+                        <div>
+                          <span className="text-gray-500 font-semibold">{linePartName(l)}:</span> <strong>{lineRowsText(l)}</strong> ({Number(l.qty) || 0} {l.unit === 'Pcs' ? 'pcs' : l.unit === 'Meter' ? 'mtr' : 'ft'})
+                          {l.design ? <span className="text-gray-600"> — {l.design}</span> : null}
+                          {l.pending ? <span className="text-red-700 font-bold"> — MEASUREMENT PENDING</span> : null}
+                        </div>
+                        {l.sample_photo && (
+                          <img src={l.sample_photo} alt="Sample" className="h-24 rounded border border-gray-300 object-contain bg-white" />
+                        )}
                       </div>
                     ))}
                     {order.tailor_notes && (
                       <div className="pt-1.5 border-t border-gray-200 text-gray-900 font-medium">
                         <span className="text-red-700 font-bold">Note:</span> {order.tailor_notes}
+                      </div>
+                    )}
+                    {Array.isArray(order.sketches) && order.sketches.length > 0 && (
+                      <div className="pt-2 border-t border-gray-200">
+                        <div className="text-xs font-bold text-amber-900 mb-1">Attached Drawings (Tap to Zoom):</div>
+                        <div className="flex flex-wrap gap-2">
+                          {order.sketches.map((sk) => (
+                            <img key={sk.id} src={sk.thumb} alt={sk.title} onClick={() => setViewingSketch(sk)} className="h-20 w-32 object-contain bg-white border border-amber-400 rounded cursor-pointer" />
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1614,6 +2855,7 @@
               );
             })
           )}
+          {viewingSketch && <SketchViewerModal sketch={viewingSketch} onClose={() => setViewingSketch(null)} />}
         </div>
       );
     }
@@ -1629,7 +2871,8 @@
     //   5. Balance due
     //   6. Measurement visits, Tailor report, Salesman report, Unconfirmed follow-up
     // =========================================================================
-    function AdminReportsView({ db, onDownloadExcel }) {
+    function AdminReportsView({ db, onDownloadExcel, onOpenWaPreview }) {
+      const activeOrders = useMemo(() => (db.orders || []).filter((o) => !o.is_archived && !o.is_trashed), [db.orders]);
       const todayIso = new Date().toISOString().split('T')[0];
       const thirtyDaysAgoIso = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
 
@@ -1644,33 +2887,33 @@
         return d >= fromDate && d <= toDate;
       };
 
-      const rangeOrders = db.orders.filter((o) => inRange(o.created_at));
+      const rangeOrders = activeOrders.filter((o) => inRange(o.created_at));
       const confirmedRange = rangeOrders.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status));
 
       // Today's summary metrics
-      const todayOrders = db.orders.filter((o) => o.created_at?.startsWith(todayIso));
+      const todayOrders = activeOrders.filter((o) => o.created_at?.startsWith(todayIso));
       const todayConfirmed = todayOrders.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status));
       const cashAdv = todayConfirmed.filter((o) => o.payment_mode === 'Cash').reduce((s, o) => s + Number(o.advance_amount), 0);
       const upiAdv = todayConfirmed.filter((o) => o.payment_mode === 'UPI').reduce((s, o) => s + Number(o.advance_amount), 0);
       const cardAdv = todayConfirmed.filter((o) => o.payment_mode === 'Card').reduce((s, o) => s + Number(o.advance_amount), 0);
       const totalTodayBalance = todayConfirmed.reduce((s, o) => s + Number(o.balance_amount), 0);
 
-      const lateOrdersList = db.orders.filter(
+      const lateOrdersList = activeOrders.filter(
         (o) => o.status !== 'Delivered' && getDueUrgency(o.promised_date, o.status)?.level === 'overdue'
       );
-      const readyDeliveryList = db.orders.filter((o) => o.status === 'Ready');
-      const balanceDueList = db.orders.filter(
+      const readyDeliveryList = activeOrders.filter((o) => o.status === 'Ready');
+      const balanceDueList = activeOrders.filter(
         (o) => !['Measurement Pending', 'Estimate Given'].includes(o.status) && Number(o.balance_amount) > 0
       );
 
       const shareDailySummaryWhatsApp = () => {
         const text =
-          `*Shree Gayatri Handloom House — Sofa Cover Dept*\n` +
+          `*Shree Gayatri Furnishing Hub — Sofa Cover Dept*\n` +
           `Daily Closing (${formatDateDDMMYYYY(todayIso)})\n\n` +
           `• Orders Created: ${todayOrders.length}\n` +
           `• Confirmed: ${todayConfirmed.length}\n` +
           `• Ready: ${readyDeliveryList.length}\n` +
-          `• Delivered Today: ${db.orders.filter((o) => o.status === 'Delivered' && o.stage_changed_at?.startsWith(todayIso)).length}\n\n` +
+          `• Delivered Today: ${activeOrders.filter((o) => o.status === 'Delivered' && o.stage_changed_at?.startsWith(todayIso)).length}\n\n` +
           `*Advance Collected Today:*\n` +
           `Cash: ${formatINR(cashAdv)} | UPI: ${formatINR(upiAdv)} | Card: ${formatINR(cardAdv)}\n` +
           `Total Advance: *${formatINR(cashAdv + upiAdv + cardAdv)}*\n` +
@@ -1690,7 +2933,7 @@
       ];
 
       const pendingStages = ['Measurement Pending', 'Estimate Given', 'Cutting Pending', 'With Tailor', 'Silai Done', 'Ready'];
-      const maxStageCount = Math.max(1, ...pendingStages.map((st) => db.orders.filter((o) => o.status === st).length));
+      const maxStageCount = Math.max(1, ...pendingStages.map((st) => activeOrders.filter((o) => o.status === st).length));
 
       return (
         <div className="space-y-4">
@@ -1791,7 +3034,7 @@
                 </div>
                 <div className="border border-gray-200 rounded p-3 bg-gray-50">
                   <div className="text-xs text-gray-600 font-semibold">Ready / Delivered</div>
-                  <div className="text-lg font-bold text-gray-900 mt-1">{readyDeliveryList.length} / {db.orders.filter((o) => o.status === 'Delivered').length}</div>
+                  <div className="text-lg font-bold text-gray-900 mt-1">{readyDeliveryList.length} / {activeOrders.filter((o) => o.status === 'Delivered').length}</div>
                 </div>
                 <div className="border border-gray-200 rounded p-3 bg-gray-50">
                   <div className="text-xs text-gray-600 font-semibold">Advance Today</div>
@@ -1832,7 +3075,7 @@
               {/* Full-width stage distribution chart */}
               <div className="space-y-2 w-full">
                 {pendingStages.map((st) => {
-                  const count = db.orders.filter((o) => o.status === st).length;
+                  const count = activeOrders.filter((o) => o.status === st).length;
                   const pct = Math.round((count / maxStageCount) * 100);
                   return (
                     <div key={st} className="w-full space-y-1">
@@ -1859,7 +3102,7 @@
                   </thead>
                   <tbody className="divide-y divide-gray-300">
                     {pendingStages.map((st) => {
-                      const list = db.orders.filter((o) => o.status === st);
+                      const list = activeOrders.filter((o) => o.status === st);
                       const avgDays = list.length ? (list.reduce((s, o) => s + getHoursInStage(o) / 24, 0) / list.length).toFixed(1) : '0.0';
                       const limit = db.settings?.stageAlertHours?.[st] || 48;
                       const stuck = list.filter((o) => getHoursInStage(o) > limit).length;
@@ -2065,13 +3308,13 @@
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-300">
-                    {db.orders.filter((o) => ['Measurement Pending', 'Estimate Given'].includes(o.status)).map((o) => (
+                    {activeOrders.filter((o) => ['Measurement Pending', 'Estimate Given'].includes(o.status)).map((o) => (
                       <tr key={o.id}>
                         <td className="p-2.5 font-bold">{o.order_no}</td>
                         <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
                         <td className="p-2.5 text-right font-bold">{formatINR(o.estimate_total)}</td>
                         <td className="p-2.5 text-right">
-                          <a href={WhatsAppService.getLink('followup', o)} target="_blank" rel="noreferrer" className="inline-flex items-center px-3 py-1.5 bg-emerald-700 text-white rounded text-xs font-semibold min-h-[36px]">
+                          <a href={WhatsAppService.getLink('estimate', o, db.settings)} target="_blank" rel="noreferrer" className="inline-flex items-center px-3 py-1.5 bg-emerald-700 text-white rounded text-xs font-semibold min-h-[36px]">
                             Follow-Up WA
                           </a>
                         </td>
@@ -2108,7 +3351,7 @@
                   <div className="border border-gray-200 rounded p-3 bg-gray-50">
                     <div className="text-xs text-gray-500 font-semibold">Ready / Delivered</div>
                     <div className="text-xl font-bold text-gray-900 mt-1">
-                      {db.orders.filter((o) => o.status === 'Ready').length} Ready / {db.orders.filter((o) => o.status === 'Delivered').length} Del.
+                      {activeOrders.filter((o) => o.status === 'Ready').length} Ready / {activeOrders.filter((o) => o.status === 'Delivered').length} Del.
                     </div>
                   </div>
                   <div className="border border-gray-200 rounded p-3 bg-gray-50">
@@ -2157,7 +3400,7 @@
                   </thead>
                   <tbody className="divide-y divide-gray-300">
                     {pendingStages.map((st) => {
-                      const list = db.orders.filter((o) => o.status === st);
+                      const list = activeOrders.filter((o) => o.status === st);
                       const avgDays = list.length ? (list.reduce((s, o) => s + getHoursInStage(o) / 24, 0) / list.length).toFixed(1) : '0.0';
                       const limit = db.settings?.stageAlertHours?.[st] || 48;
                       const stuck = list.filter((o) => getHoursInStage(o) > limit).length;
@@ -2318,7 +3561,7 @@
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-300">
-                    {db.orders.filter((o) => ['Measurement Pending', 'Estimate Given'].includes(o.status)).map((o) => (
+                    {activeOrders.filter((o) => ['Measurement Pending', 'Estimate Given'].includes(o.status)).map((o) => (
                       <tr key={o.id}>
                         <td className="p-2.5 font-bold">{o.order_no}</td>
                         <td className="p-2.5">{formatDateDDMMYYYY(o.created_at)}</td>
@@ -2326,7 +3569,7 @@
                         <td className="p-2.5">{o.design_name}</td>
                         <td className="p-2.5 text-right font-bold">{formatINR(o.estimate_total)}</td>
                         <td className="p-2.5 text-right no-print">
-                          <a href={WhatsAppService.getLink('followup', o)} target="_blank" rel="noreferrer" className="px-2.5 py-1 bg-emerald-700 text-white rounded text-xs font-semibold">
+                          <a href={WhatsAppService.getLink('estimate', o, db.settings)} target="_blank" rel="noreferrer" className="px-2.5 py-1 bg-emerald-700 text-white rounded text-xs font-semibold">
                             WhatsApp Follow-Up
                           </a>
                         </td>
@@ -2376,18 +3619,23 @@
     // - Below 768px: slide-in drawer from hamburger, compact header (logo + short title + search icon),
     //   Install App & Logout inside drawer, and card-based orders list
     // =========================================================================
-    function DesktopERPView({ db, saveDb, currentRole, savedKey, onLogout, triggerInstall, syncStatus }) {
+    function DesktopERPView({ db, saveDb, currentRole, savedKey, supabaseClient, serverAuthMode, onLogout, triggerInstall, syncStatus }) {
       const isAdmin = currentRole === 'admin';
       const [activeNav, setActiveNav] = useState('orders'); // orders | new_order | reports | settings
       const [queueFilter, setQueueFilter] = useState('ALL'); // ALL | READY_DELIVERY | BALANCE_DUE | STUCK | UNCONFIRMED
       const [searchQuery, setSearchQuery] = useState('');
+      const [sortOrder, setSortOrder] = useState('NEWEST');
       const [selectedIds, setSelectedIds] = useState([]);
       const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
 
       const [editingOrder, setEditingOrder] = useState(null);
       const [stickerBatch, setStickerBatch] = useState(null);
       const [timelineOrder, setTimelineOrder] = useState(null);
+      const [waPreview, setWaPreview] = useState(null); // { order, type }
+      const [viewingSketch, setViewingSketch] = useState(null);
       const [undoState, setUndoState] = useState(null);
+      const [serverDevices, setServerDevices] = useState([]);
+      const [loadingDevices, setLoadingDevices] = useState(false);
 
       // Ctrl+K Global Search Modal
       const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
@@ -2399,6 +3647,31 @@
       const [rateEdits, setRateEdits] = useState(db.settings.tailorRates);
       const [dimEdits, setDimEdits] = useState({ w: db.settings.sticker_width_mm || 60, h: db.settings.sticker_height_mm || 40 });
       const [alertEdits, setAlertEdits] = useState(db.settings.stageAlertHours || { 'Cutting Pending': 24, 'With Tailor': 48, 'Silai Done': 12, 'Ready': 72 });
+      const [shopPhoneEdits, setShopPhoneEdits] = useState({
+        primary: db.settings.shop_phone || '9016904528',
+        alt: db.settings.shop_phone_alt || '9725454423'
+      });
+      const [waTemplatesEdit, setWaTemplatesEdit] = useState(() => ({
+        ...DEFAULT_WA_TEMPLATES,
+        ...(db.settings.wa_templates || {})
+      }));
+
+      const refreshServerDevices = async () => {
+        if (!isAdmin || !supabaseClient || !serverAuthMode) return;
+        setLoadingDevices(true);
+        try {
+          const { data, error } = await supabaseClient.rpc('admin_list_devices');
+          if (!error && Array.isArray(data)) setServerDevices(data);
+        } finally {
+          setLoadingDevices(false);
+        }
+      };
+
+      useEffect(() => {
+        if (activeNav === 'settings' && isAdmin && serverAuthMode) {
+          refreshServerDevices();
+        }
+      }, [activeNav, isAdmin, serverAuthMode]);
 
       useEffect(() => {
         const onKeyDown = (e) => {
@@ -2435,7 +3708,7 @@
         setUndoState(null);
       };
 
-      const handleCommitOrder = (payload, wasConfirmed, afterAction) => {
+      const handleCommitOrder = (payload, wasConfirmed, afterAction, noteMeta = {}) => {
         const nowIso = new Date().toISOString();
         let savedOrder;
         let nextOrders;
@@ -2468,16 +3741,115 @@
           ...db.activityLogs
         ];
 
-        saveDb({ ...db, nextOrderSeq: nextSeq, orders: nextOrders, activityLogs: nextActivity });
+        const existingNotes = Array.isArray(db.notes) ? db.notes : [];
+        const addedNotes = [];
+        const pushNote = (text, priority) => {
+          addedNotes.push({
+            id: crypto.randomUUID(),
+            order_id: savedOrder.id,
+            order_no: savedOrder.order_no,
+            text,
+            priority: priority || 'Normal',
+            status: 'open',
+            created_by: currentRole,
+            created_at: nowIso
+          });
+        };
+        if (noteMeta?.manualNote?.text) pushNote(noteMeta.manualNote.text, noteMeta.manualNote.priority);
+        if (noteMeta?.advanceZeroOnConfirm) {
+          const alreadyHas = existingNotes.some((n) => n.order_id === savedOrder.id && n.status !== 'done' && /Advance not taken/i.test(n.text));
+          if (!alreadyHas) pushNote('Advance not taken', 'Urgent');
+        }
+        if (noteMeta?.hasPendingLine) {
+          const alreadyHas = existingNotes.some((n) => n.order_id === savedOrder.id && n.status !== 'done' && /Measurement pending/i.test(n.text));
+          if (!alreadyHas) pushNote('Measurement pending on one or more lines', 'Urgent');
+        }
+
+        saveDb({ ...db, nextOrderSeq: nextSeq, orders: nextOrders, activityLogs: nextActivity, notes: [...addedNotes, ...existingNotes] });
         setEditingOrder(null);
         setActiveNav('orders');
 
         if (afterAction === 'sticker_and_wa') {
           setStickerBatch([savedOrder]);
-          window.open(WhatsAppService.getLink('receipt', savedOrder), '_blank');
+          setWaPreview({ order: savedOrder, type: 'receipt' });
         } else if (afterAction === 'sticker_only') {
           setStickerBatch([savedOrder]);
         }
+      };
+
+      const handleMarkNoteDone = (note) => {
+        const nowIso = new Date().toISOString();
+        const nextNotes = (db.notes || []).map((n) => (n.id === note.id ? { ...n, status: 'done', done_at: nowIso, done_by: currentRole } : n));
+        saveDb({ ...db, notes: nextNotes });
+      };
+
+      // ITEM 3: Move Back to Pending, Archive, Trash (30d), Restore, Permanent Delete (Admin only, reason required, logged)
+      const handleMoveBackToPending = (order) => {
+        if (!isAdmin) return;
+        const alreadyStarted = Boolean(order.sticker_printed_at) || ['With Tailor', 'Silai Done', 'Ready', 'Delivered'].includes(order.status);
+        if (alreadyStarted) {
+          if (!confirm(`WARNING: Sticker was already printed or cutting/stitching has started for ${order.order_no} (Status: ${order.status}). Still move back to Pending confirmation?`)) return;
+        }
+        const reason = prompt(`Enter reason for moving ${order.order_no} back to Estimate / Pending confirmation:`);
+        if (!reason || !reason.trim()) return alert('A reason is required.');
+        const nowIso = new Date().toISOString();
+        const nextOrders = db.orders.map((o) => (o.id === order.id ? { ...o, status: 'Estimate Given', assigned_tailor: null, stage_changed_at: nowIso } : o));
+        const nextActivity = [
+          { id: crypto.randomUUID(), order_no: order.order_no, action: `Moved back to Pending (Estimate Given). Reason: ${reason.trim()}`, role: currentRole, created_at: nowIso },
+          ...db.activityLogs
+        ];
+        saveDb({ ...db, orders: nextOrders, activityLogs: nextActivity });
+      };
+
+      const handleArchiveOrder = (order) => {
+        if (!isAdmin) return;
+        const reason = prompt(`Enter reason for archiving ${order.order_no} (hidden from active list & sales totals):`);
+        if (!reason || !reason.trim()) return alert('A reason is required to archive.');
+        const nowIso = new Date().toISOString();
+        const nextOrders = db.orders.map((o) => (o.id === order.id ? { ...o, is_archived: true, archive_reason: reason.trim(), archived_at: nowIso } : o));
+        const nextActivity = [
+          { id: crypto.randomUUID(), order_no: order.order_no, action: `Archived order. Reason: ${reason.trim()}`, role: currentRole, created_at: nowIso },
+          ...db.activityLogs
+        ];
+        saveDb({ ...db, orders: nextOrders, activityLogs: nextActivity });
+      };
+
+      const handleMoveToTrash = (order) => {
+        if (!isAdmin) return;
+        const reason = prompt(`Enter reason for deleting ${order.order_no} (moves to Trash for 30 days):`);
+        if (!reason || !reason.trim()) return alert('A reason is required to delete.');
+        const nowIso = new Date().toISOString();
+        const nextOrders = db.orders.map((o) => (o.id === order.id ? { ...o, is_trashed: true, trash_reason: reason.trim(), trashed_at: nowIso } : o));
+        const nextActivity = [
+          { id: crypto.randomUUID(), order_no: order.order_no, action: `Moved to Trash. Reason: ${reason.trim()}`, role: currentRole, created_at: nowIso },
+          ...db.activityLogs
+        ];
+        saveDb({ ...db, orders: nextOrders, activityLogs: nextActivity });
+      };
+
+      const handleRestoreOrder = (order) => {
+        if (!isAdmin) return;
+        const nowIso = new Date().toISOString();
+        const nextOrders = db.orders.map((o) => (o.id === order.id ? { ...o, is_archived: false, is_trashed: false } : o));
+        const nextActivity = [
+          { id: crypto.randomUUID(), order_no: order.order_no, action: 'Restored order to active list', role: currentRole, created_at: nowIso },
+          ...db.activityLogs
+        ];
+        saveDb({ ...db, orders: nextOrders, activityLogs: nextActivity });
+      };
+
+      const handlePermanentDelete = (order) => {
+        if (!isAdmin) return;
+        const typed = prompt(`PERMANENT DELETE: Type the exact order number "${order.order_no}" to permanently delete this order:`);
+        if (typed !== order.order_no) return alert('Order number did not match. Cancelled.');
+        const nowIso = new Date().toISOString();
+        const nextOrders = db.orders.filter((o) => o.id !== order.id);
+        const nextDeleted = Array.from(new Set([...(db.deletedOrderIds || []), order.id]));
+        const nextActivity = [
+          { id: crypto.randomUUID(), order_no: order.order_no, action: 'Permanently deleted from Trash', role: currentRole, created_at: nowIso },
+          ...db.activityLogs
+        ];
+        saveDb({ ...db, orders: nextOrders, deletedOrderIds: nextDeleted, activityLogs: nextActivity });
       };
 
       const handleStatusChange = (order, newStatus) => {
@@ -2493,22 +3865,28 @@
 
       const handleLogStickerReprint = (order) => {
         const nowIso = new Date().toISOString();
+        const nextOrders = db.orders.map((o) => (o.id === order.id ? { ...o, sticker_printed_at: o.sticker_printed_at || nowIso } : o));
         const nextActivity = [
           { id: crypto.randomUUID(), order_no: order.order_no, action: 'Cutting sticker printed / reprinted', role: currentRole, created_at: nowIso },
           ...db.activityLogs
         ];
-        saveDb({ ...db, activityLogs: nextActivity });
+        saveDb({ ...db, orders: nextOrders, activityLogs: nextActivity });
       };
 
       const handleDownloadExcel = () => {
         const todayStr = new Date().toISOString().split('T')[0];
         const orderRows = db.orders.map((o) => ({
           Order_No: o.order_no,
+          Order_Type: o.order_type || 'Sofa Cover',
           Created_Date: formatDateDDMMYYYY(o.created_at),
           Status: o.status,
+          Archived: o.is_archived ? 'Yes' : 'No',
+          Trashed: o.is_trashed ? 'Yes' : 'No',
           Customer_Name: o.customer_name,
           Mobile: o.mobile,
           Design_Name: o.design_name,
+          Lines_Breakdown: WhatsAppService.buildLinesSummary(o).replace(/\n/g, ' ; '),
+          Sketches_Count: (o.sketches || []).length,
           Total_Pcs: o.total_pcs,
           Seating_Segments: o.seating_segments,
           Seating_Feet: o.seating_feet,
@@ -2543,22 +3921,30 @@
         }
       };
 
-      // Counter Queue Counters
-      const readyForDeliveryCount = db.orders.filter((o) => o.status === 'Ready').length;
-      const balanceDueCount = db.orders.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status) && Number(o.balance_amount) > 0).length;
-      const stuckOrdersList = db.orders.filter((o) => {
+      // Active vs Archived vs Trash (30-day retention view)
+      const activeOrders = useMemo(() => db.orders.filter((o) => !o.is_archived && !o.is_trashed), [db.orders]);
+      const archivedOrders = useMemo(() => db.orders.filter((o) => o.is_archived && !o.is_trashed), [db.orders]);
+      const trashedOrders = useMemo(() => db.orders.filter((o) => o.is_trashed), [db.orders]);
+
+      // Counter Queue Counters (active orders only)
+      const readyForDeliveryCount = activeOrders.filter((o) => o.status === 'Ready').length;
+      const balanceDueCount = activeOrders.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status) && Number(o.balance_amount) > 0).length;
+      const stuckOrdersList = activeOrders.filter((o) => {
         const limit = db.settings?.stageAlertHours?.[o.status];
         return limit && getHoursInStage(o) > limit;
       });
-      const unconfirmedCount = db.orders.filter((o) => ['Measurement Pending', 'Estimate Given'].includes(o.status)).length;
+      const unconfirmedCount = activeOrders.filter((o) => ['Measurement Pending', 'Estimate Given'].includes(o.status)).length;
+
+      const orderNoNum = (o) => parseInt(String(o.order_no || '').replace(/\D/g, ''), 10) || 0;
 
       const filteredOrders = useMemo(() => {
+        const base = activeNav === 'archived' ? archivedOrders : activeNav === 'trash' ? trashedOrders : activeOrders;
         const q = searchQuery.toLowerCase().trim();
-        return db.orders
-          .filter((o) => {
-            if (q && !(o.order_no?.toLowerCase().includes(q) || o.customer_name?.toLowerCase().includes(q) || o.mobile?.includes(q) || o.design_name?.toLowerCase().includes(q))) {
-              return false;
-            }
+        const list = base.filter((o) => {
+          if (q && !(o.order_no?.toLowerCase().includes(q) || o.customer_name?.toLowerCase().includes(q) || o.mobile?.includes(q) || o.design_name?.toLowerCase().includes(q))) {
+            return false;
+          }
+          if (activeNav === 'orders') {
             if (queueFilter === 'READY_DELIVERY') return o.status === 'Ready';
             if (queueFilter === 'BALANCE_DUE') return !['Measurement Pending', 'Estimate Given'].includes(o.status) && Number(o.balance_amount) > 0;
             if (queueFilter === 'STUCK') {
@@ -2566,10 +3952,17 @@
               return limit && getHoursInStage(o) > limit;
             }
             if (queueFilter === 'UNCONFIRMED') return ['Measurement Pending', 'Estimate Given'].includes(o.status);
-            return true;
-          })
-          .sort((a, b) => (a.promised_date || '9999-12-31').localeCompare(b.promised_date || '9999-12-31'));
-      }, [db.orders, searchQuery, queueFilter, db.settings]);
+          }
+          return true;
+        });
+
+        return [...list].sort((a, b) => {
+          if (sortOrder === 'NEWEST') return orderNoNum(b) - orderNoNum(a) || String(b.created_at || '').localeCompare(String(a.created_at || ''));
+          if (sortOrder === 'OLDEST') return orderNoNum(a) - orderNoNum(b) || String(a.created_at || '').localeCompare(String(b.created_at || ''));
+          if (sortOrder === 'HIGHEST_AMT') return (Number(b.estimate_total) || 0) - (Number(a.estimate_total) || 0);
+          return (a.promised_date || '9999-12-31').localeCompare(b.promised_date || '9999-12-31');
+        });
+      }, [activeOrders, archivedOrders, trashedOrders, activeNav, searchQuery, queueFilter, sortOrder, db.settings]);
 
       const globalMatches = useMemo(() => {
         const q = globalSearchTerm.toLowerCase().trim();
@@ -2617,7 +4010,7 @@
               }`}
             >
               <span className="inline-flex items-center gap-2.5"><Icon name="ListOrdered" size={16} /> All Orders</span>
-              <span className="text-xs opacity-80 tabular-nums">{db.orders.length}</span>
+              <span className="text-xs opacity-80 tabular-nums">{activeOrders.length}</span>
             </button>
 
             <button
@@ -2680,6 +4073,24 @@
                   }`}
                 >
                   <Icon name="Settings" size={16} /> Shop Settings & Data
+                </button>
+                <button
+                  onClick={() => selectPage('archived')}
+                  className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                    activeNav === 'archived' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-2.5"><Icon name="Archive" size={16} /> Archived</span>
+                  <span className="text-xs opacity-80 tabular-nums">{archivedOrders.length}</span>
+                </button>
+                <button
+                  onClick={() => selectPage('trash')}
+                  className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                    activeNav === 'trash' ? 'bg-red-800 text-white' : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-2.5"><Icon name="Trash2" size={16} /> Trash (30d)</span>
+                  <span className="text-xs opacity-80 tabular-nums">{trashedOrders.length}</span>
                 </button>
               </div>
             )}
@@ -2806,16 +4217,33 @@
               {activeNav === 'new_order' && (
                 <OrderEntryScreen
                   existingOrder={editingOrder}
-                  allOrders={db.orders}
+                  allOrders={activeOrders}
                   salesmen={db.salesmen}
                   currentRole={currentRole}
+                  orderNotes={editingOrder ? (db.notes || []).filter((n) => n.order_id === editingOrder.id || n.order_no === editingOrder.order_no) : []}
                   onCancel={() => { setEditingOrder(null); setActiveNav('orders'); }}
                   onCommitOrder={handleCommitOrder}
                 />
               )}
 
-              {activeNav === 'orders' && (
+              {['orders', 'archived', 'trash'].includes(activeNav) && (
+                <>
+                {activeNav === 'orders' && (
+                  <ImportantNotesBoard
+                    notes={db.notes || []}
+                    orders={activeOrders}
+                    onMarkDone={handleMarkNoteDone}
+                    onOpenOrder={(ord) => { setEditingOrder(ord); setActiveNav('new_order'); }}
+                  />
+                )}
                 <div className="bg-white border border-gray-300 rounded shadow-sm">
+                  {activeNav !== 'orders' && (
+                    <div className={`px-4 py-2.5 border-b text-xs font-bold uppercase ${activeNav === 'trash' ? 'bg-red-50 text-red-900 border-red-200' : 'bg-gray-100 text-gray-800 border-gray-200'}`}>
+                      {activeNav === 'archived'
+                        ? 'Archived Orders — Hidden from active lists and excluded from sales totals (Restorable anytime)'
+                        : 'Trash — Deleted orders restorable for 30 days. Permanent delete requires typing the exact Order No.'}
+                    </div>
+                  )}
                   {/* Filters & Batch Actions Bar */}
                   <div className="p-3 md:p-3.5 border-b border-gray-200 flex flex-col md:flex-row justify-between items-stretch md:items-center gap-2.5 bg-gray-50">
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1">
@@ -2828,16 +4256,28 @@
                           onChange={(e) => setSearchQuery(e.target.value)}
                         />
                       </div>
+                      {activeNav === 'orders' && (
+                        <select
+                          className="border border-gray-300 bg-white rounded px-3 py-2 text-sm font-medium"
+                          value={queueFilter}
+                          onChange={(e) => setQueueFilter(e.target.value)}
+                        >
+                          <option value="ALL">All Orders ({activeOrders.length})</option>
+                          <option value="READY_DELIVERY">Ready for Delivery ({readyForDeliveryCount})</option>
+                          <option value="BALANCE_DUE">Balance Due ({balanceDueCount})</option>
+                          <option value="UNCONFIRMED">Unconfirmed Estimates ({unconfirmedCount})</option>
+                          <option value="STUCK">Stuck in Stage ({stuckOrdersList.length})</option>
+                        </select>
+                      )}
                       <select
-                        className="border border-gray-300 bg-white rounded px-3 py-2 text-sm font-medium"
-                        value={queueFilter}
-                        onChange={(e) => setQueueFilter(e.target.value)}
+                        className="border border-gray-300 bg-white rounded px-3 py-2 text-sm font-semibold"
+                        value={sortOrder}
+                        onChange={(e) => setSortOrder(e.target.value)}
                       >
-                        <option value="ALL">All Orders ({db.orders.length})</option>
-                        <option value="READY_DELIVERY">Ready for Delivery ({readyForDeliveryCount})</option>
-                        <option value="BALANCE_DUE">Balance Due ({balanceDueCount})</option>
-                        <option value="UNCONFIRMED">Unconfirmed Estimates ({unconfirmedCount})</option>
-                        <option value="STUCK">Stuck in Stage ({stuckOrdersList.length})</option>
+                        <option value="NEWEST">Sort: Newest First (Series ↓)</option>
+                        <option value="OLDEST">Sort: Oldest First (Series ↑)</option>
+                        <option value="HIGHEST_AMT">Sort: Highest to Lowest ₹</option>
+                        <option value="DUE_DATE">Sort: Delivery Due Date</option>
                       </select>
                     </div>
 
@@ -2962,17 +4402,22 @@
                                   Deliver
                                 </button>
                               )}
-                              <a
-                                href={WhatsAppService.getLink(
-                                  o.status === 'Ready' ? 'ready' : o.status === 'Delivered' ? 'delivered' : isConfirmed ? 'receipt' : 'followup',
-                                  o
-                                )}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="ml-auto px-3 py-2 border border-gray-300 bg-white text-emerald-700 rounded text-xs font-semibold inline-flex items-center gap-1.5 min-h-[44px]"
-                              >
-                                <Icon name="MessageSquare" size={15} /> WhatsApp
-                              </a>
+                              {activeNav === 'orders' ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setWaPreview({ order: o, type: o.status === 'Ready' ? 'ready' : o.status === 'Delivered' ? 'delivered' : isConfirmed ? 'receipt' : 'estimate' })}
+                                  className="ml-auto px-3 py-2 border border-gray-300 bg-white text-emerald-700 rounded text-xs font-semibold inline-flex items-center gap-1.5 min-h-[44px]"
+                                >
+                                  <Icon name="MessageSquare" size={15} /> WhatsApp
+                                </button>
+                              ) : isAdmin ? (
+                                <div className="ml-auto flex gap-1.5">
+                                  <button type="button" onClick={() => handleRestoreOrder(o)} className="px-3 py-2 bg-emerald-700 text-white rounded text-xs font-bold min-h-[44px]">Restore</button>
+                                  {activeNav === 'trash' && (
+                                    <button type="button" onClick={() => handlePermanentDelete(o)} className="px-3 py-2 bg-red-700 text-white rounded text-xs font-bold min-h-[44px]">Delete Perm.</button>
+                                  )}
+                                </div>
+                              ) : null}
                             </div>
                           </div>
                         );
@@ -3040,8 +4485,22 @@
                                   <div className="text-xs text-gray-500">{o.mobile} • {o.salesman_name}</div>
                                 </td>
                                 <td className="p-2.5">
-                                  <div className="font-medium text-gray-900">{o.design_name}</div>
-                                  <div className="text-xs text-gray-500">{o.total_pcs} pcs • {o.seating_feet} ft seat</div>
+                                  <div className="font-medium text-gray-900 flex items-center gap-1.5">
+                                    <span>{o.design_name}</span>
+                                    {o.order_type && o.order_type !== 'Sofa Cover' && (
+                                      <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200 text-[10px] font-bold">{o.order_type}</span>
+                                    )}
+                                    {(o.sketches || []).length > 0 && (
+                                      <button type="button" onClick={() => setViewingSketch(o.sketches[0])} className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[10px] font-bold hover:underline">
+                                        Sketch ({o.sketches.length})
+                                      </button>
+                                    )}
+                                  </div>
+                                  <div className="text-xs text-gray-500">
+                                    {o.total_pcs} pcs • {o.seating_feet ? `${o.seating_feet} ft seat` : lineRowsText(getOrderLines(o)[0] || {})}
+                                  </div>
+                                  {o.archive_reason && activeNav === 'archived' && <div className="text-[11px] text-gray-500 italic">Reason: {o.archive_reason}</div>}
+                                  {o.trash_reason && activeNav === 'trash' && <div className="text-[11px] text-red-700 italic">Deleted reason: {o.trash_reason}</div>}
                                 </td>
                                 <td className="p-2.5 whitespace-nowrap">
                                   <div className="font-medium text-gray-900">{formatDateDDMMYYYY(o.promised_date)}</div>
@@ -3106,18 +4565,58 @@
                                         Deliver
                                       </button>
                                     )}
-                                    <a
-                                      title="Send WhatsApp"
-                                      href={WhatsAppService.getLink(
-                                        o.status === 'Ready' ? 'ready' : o.status === 'Delivered' ? 'delivered' : isConfirmed ? 'receipt' : 'followup',
-                                        o
-                                      )}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="p-1.5 border border-gray-300 bg-white hover:bg-emerald-50 text-emerald-700 rounded"
-                                    >
-                                      <Icon name="MessageSquare" size={14} />
-                                    </a>
+                                    {activeNav === 'orders' && (
+                                      <button
+                                        title="WhatsApp Preview & Send"
+                                        onClick={() => setWaPreview({ order: o, type: o.status === 'Ready' ? 'ready' : o.status === 'Delivered' ? 'delivered' : isConfirmed ? 'receipt' : 'estimate' })}
+                                        className="p-1.5 border border-gray-300 bg-white hover:bg-emerald-50 text-emerald-700 rounded"
+                                      >
+                                        <Icon name="MessageSquare" size={14} />
+                                      </button>
+                                    )}
+                                    {isAdmin && activeNav === 'orders' && isConfirmed && (
+                                      <button
+                                        title="Move back to Pending confirmation"
+                                        onClick={() => handleMoveBackToPending(o)}
+                                        className="px-2 py-1 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 rounded text-xs font-semibold"
+                                      >
+                                        Move Back
+                                      </button>
+                                    )}
+                                    {isAdmin && activeNav === 'orders' && (
+                                      <button
+                                        title="Archive Order"
+                                        onClick={() => handleArchiveOrder(o)}
+                                        className="p-1.5 border border-gray-300 bg-white hover:bg-gray-100 text-gray-700 rounded"
+                                      >
+                                        <Icon name="Archive" size={14} />
+                                      </button>
+                                    )}
+                                    {isAdmin && activeNav === 'orders' && (
+                                      <button
+                                        title="Delete to Trash"
+                                        onClick={() => handleMoveToTrash(o)}
+                                        className="p-1.5 border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 rounded"
+                                      >
+                                        <Icon name="Trash2" size={14} />
+                                      </button>
+                                    )}
+                                    {isAdmin && (activeNav === 'archived' || activeNav === 'trash') && (
+                                      <button
+                                        onClick={() => handleRestoreOrder(o)}
+                                        className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-xs font-semibold"
+                                      >
+                                        Restore
+                                      </button>
+                                    )}
+                                    {isAdmin && activeNav === 'trash' && (
+                                      <button
+                                        onClick={() => handlePermanentDelete(o)}
+                                        className="px-2.5 py-1 bg-red-700 hover:bg-red-800 text-white rounded text-xs font-bold"
+                                      >
+                                        Delete Permanently
+                                      </button>
+                                    )}
                                   </div>
                                 </td>
                               </tr>
@@ -3128,6 +4627,7 @@
                     </table>
                   </div>
                 </div>
+                </>
               )}
 
               {isAdmin && activeNav === 'reports' && (
@@ -3242,8 +4742,15 @@
                       </div>
                     </div>
                     <button
-                      onClick={() => {
+                      onClick={async () => {
                         saveDb({ ...db, settings: { ...db.settings, pins: pinEdits, tailorRates: rateEdits } });
+                        if (serverAuthMode && supabaseClient) {
+                          for (const [roleKey, newPin] of Object.entries(pinEdits)) {
+                            if (newPin && String(newPin).length === 4) {
+                              await supabaseClient.rpc('admin_update_pin', { p_role: roleKey, p_new_pin: String(newPin) }).catch(() => {});
+                            }
+                          }
+                        }
                         alert('PINs and Tailor Rates saved.');
                       }}
                       className="w-full sm:w-auto px-4 py-2.5 bg-gray-900 text-white rounded text-xs font-bold min-h-[44px] md:min-h-0"
@@ -3264,23 +4771,74 @@
                           Send via WhatsApp
                         </a>
                       </div>
+                      <div className="mb-2 flex justify-between items-center">
+                        <span className={`text-[11px] font-bold px-2 py-0.5 rounded ${serverAuthMode ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-900'}`}>
+                          {serverAuthMode ? 'Server RLS Active (Supabase Enforced)' : 'Run device_security_rls.sql in Supabase for server enforcement'}
+                        </span>
+                        {serverAuthMode && (
+                          <button type="button" onClick={refreshServerDevices} className="text-xs font-semibold text-gray-700 underline">
+                            {loadingDevices ? 'Refreshing...' : 'Refresh List'}
+                          </button>
+                        )}
+                      </div>
                       <div className="divide-y divide-gray-200 border border-gray-200 rounded">
-                        {db.devices.length === 0 ? (
-                          <div className="p-3 text-xs text-gray-500">No staff devices pending approval.</div>
+                        {(serverAuthMode ? serverDevices : db.devices).length === 0 ? (
+                          <div className="p-3 text-xs text-gray-500">No devices registered yet.</div>
                         ) : (
-                          db.devices.map((d) => (
-                            <div key={d.fp} className="p-2.5 flex justify-between items-center text-xs gap-2">
+                          (serverAuthMode ? serverDevices : db.devices).map((d) => (
+                            <div key={d.fp} className="p-2.5 flex flex-wrap justify-between items-center text-xs gap-2">
                               <div>
-                                <span className="font-bold uppercase">{d.role}</span> • <span className="font-mono">{d.fp}</span> ({d.status})
+                                <div className="font-bold text-gray-900">
+                                  <span className="uppercase">{d.role}</span> — {d.device_name || 'Device'}
+                                </div>
+                                <div className="text-[11px] text-gray-500 font-mono">
+                                  {d.fp} • {d.requested_at ? formatDateTimeDDMMYYYY(d.requested_at) : ''} • <strong className="uppercase text-gray-800">{d.status}</strong>
+                                </div>
                               </div>
                               <div className="flex gap-1">
                                 {d.status !== 'approved' && (
-                                  <button onClick={() => saveDb({ ...db, devices: db.devices.map((x) => (x.fp === d.fp ? { ...x, status: 'approved' } : x)) })} className="px-2.5 py-1.5 bg-emerald-700 text-white rounded font-bold">
-                                    Approve
+                                  <button
+                                    onClick={async () => {
+                                      if (serverAuthMode && supabaseClient) {
+                                        await supabaseClient.rpc('admin_manage_device', { p_target_fp: d.fp, p_action: 'approve' });
+                                        refreshServerDevices();
+                                      } else {
+                                        saveDb({ ...db, devices: db.devices.map((x) => (x.fp === d.fp ? { ...x, status: 'approved' } : x)) });
+                                      }
+                                    }}
+                                    className="px-2.5 py-1.5 bg-emerald-700 text-white rounded font-bold"
+                                  >
+                                    Allow
                                   </button>
                                 )}
-                                <button onClick={() => saveDb({ ...db, devices: db.devices.filter((x) => x.fp !== d.fp) })} className="px-2.5 py-1.5 bg-red-100 text-red-700 rounded font-bold">
-                                  Revoke
+                                {d.status !== 'rejected' && (
+                                  <button
+                                    onClick={async () => {
+                                      if (serverAuthMode && supabaseClient) {
+                                        await supabaseClient.rpc('admin_manage_device', { p_target_fp: d.fp, p_action: 'reject' });
+                                        refreshServerDevices();
+                                      } else {
+                                        saveDb({ ...db, devices: db.devices.map((x) => (x.fp === d.fp ? { ...x, status: 'rejected' } : x)) });
+                                      }
+                                    }}
+                                    className="px-2.5 py-1.5 bg-amber-600 text-white rounded font-bold"
+                                  >
+                                    Reject
+                                  </button>
+                                )}
+                                <button
+                                  onClick={async () => {
+                                    if (!confirm(`Remove device ${d.fp}?`)) return;
+                                    if (serverAuthMode && supabaseClient) {
+                                      await supabaseClient.rpc('admin_manage_device', { p_target_fp: d.fp, p_action: 'remove' });
+                                      refreshServerDevices();
+                                    } else {
+                                      saveDb({ ...db, devices: db.devices.filter((x) => x.fp !== d.fp) });
+                                    }
+                                  }}
+                                  className="px-2.5 py-1.5 bg-red-100 text-red-700 rounded font-bold"
+                                >
+                                  Remove
                                 </button>
                               </div>
                             </div>
@@ -3322,6 +4880,104 @@
                         Save Sticker & Alert Settings
                       </button>
                     </div>
+                  </div>
+
+                  {/* ITEM 1: WhatsApp Message Templates & Shop Phones */}
+                  <div className="lg:col-span-2 bg-white border border-gray-300 rounded p-4 space-y-4">
+                    <div className="flex flex-wrap justify-between items-center gap-2 border-b border-gray-200 pb-2">
+                      <div>
+                        <h3 className="font-bold text-base text-gray-900">WhatsApp Message Templates & Shop Phone Numbers</h3>
+                        <p className="text-xs text-gray-500">
+                          Shop Name: <strong>Shree Gayatri Furnishing Hub</strong> • Placeholders: <code>{'{customer}'}</code>, <code>{'{order_no}'}</code>, <code>{'{lines}'}</code>, <code>{'{total}'}</code>, <code>{'{advance}'}</code>, <code>{'{balance}'}</code>, <code>{'{promised_date}'}</code>, <code>{'{shop_phone}'}</code>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-700 mb-1">Primary Shop Phone</label>
+                        <input
+                          className="w-full border border-gray-300 rounded px-3 py-2 text-sm tabular-nums"
+                          value={shopPhoneEdits.primary}
+                          onChange={(e) => setShopPhoneEdits({ ...shopPhoneEdits, primary: e.target.value })}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-700 mb-1">Secondary Shop Phone</label>
+                        <input
+                          className="w-full border border-gray-300 rounded px-3 py-2 text-sm tabular-nums"
+                          value={shopPhoneEdits.alt}
+                          onChange={(e) => setShopPhoneEdits({ ...shopPhoneEdits, alt: e.target.value })}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {[
+                        { key: 'estimate', label: 'Estimate Template' },
+                        { key: 'receipt', label: 'Order Receipt Template (with Paper Bill Terms)' },
+                        { key: 'ready', label: 'Order Ready Template' },
+                        { key: 'reminder', label: 'Balance Reminder Template' },
+                        { key: 'delivered', label: 'Delivered / Thank-You Template' }
+                      ].map((t) => {
+                        const cur = waTemplatesEdit[t.key] || DEFAULT_WA_TEMPLATES[t.key];
+                        return (
+                          <div key={t.key} className="border border-gray-200 rounded p-3 bg-gray-50 space-y-2">
+                            <div className="flex justify-between items-center gap-2">
+                              <span className="font-bold text-xs text-gray-800">{t.label}</span>
+                              <select
+                                className="border border-gray-300 rounded px-2 py-1 text-xs font-semibold bg-white"
+                                value={cur.lang || 'Hinglish'}
+                                onChange={(e) => {
+                                  const nextLang = e.target.value;
+                                  const presetText = nextLang === 'Hinglish'
+                                    ? DEFAULT_WA_TEMPLATES[t.key].text
+                                    : (WA_LANG_PRESETS[nextLang]?.[t.key] || cur.text);
+                                  setWaTemplatesEdit({
+                                    ...waTemplatesEdit,
+                                    [t.key]: { lang: nextLang, text: presetText }
+                                  });
+                                }}
+                              >
+                                <option value="Hinglish">Hinglish (Default)</option>
+                                <option value="Gujarati">Gujarati</option>
+                                <option value="English">English</option>
+                              </select>
+                            </div>
+                            <textarea
+                              rows={5}
+                              className="w-full border border-gray-300 rounded p-2 text-xs font-mono bg-white"
+                              value={cur.text || ''}
+                              onChange={(e) =>
+                                setWaTemplatesEdit({
+                                  ...waTemplatesEdit,
+                                  [t.key]: { ...cur, text: e.target.value }
+                                })
+                              }
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        saveDb({
+                          ...db,
+                          settings: {
+                            ...db.settings,
+                            shop_phone: shopPhoneEdits.primary.trim(),
+                            shop_phone_alt: shopPhoneEdits.alt.trim(),
+                            wa_templates: waTemplatesEdit
+                          }
+                        });
+                        alert('WhatsApp templates and shop phone numbers saved.');
+                      }}
+                      className="px-4 py-2.5 bg-gray-900 hover:bg-gray-800 text-white rounded text-xs font-bold min-h-[44px] md:min-h-0"
+                    >
+                      Save WhatsApp Templates & Shop Phones
+                    </button>
                   </div>
                 </div>
               )}
@@ -3387,6 +5043,22 @@
               onClose={() => setTimelineOrder(null)}
             />
           )}
+
+          {waPreview && (
+            <WhatsAppPreviewModal
+              initialType={waPreview.type}
+              order={waPreview.order}
+              settings={db.settings}
+              onClose={() => setWaPreview(null)}
+            />
+          )}
+
+          {viewingSketch && (
+            <SketchViewerModal
+              sketch={viewingSketch}
+              onClose={() => setViewingSketch(null)}
+            />
+          )}
         </div>
       );
     }
@@ -3428,6 +5100,8 @@
         if (k === 'orders') merged.orders = byId('orders', (o) => o.id, 'created_at');
         else if (k === 'activityLogs') merged.activityLogs = byId('activityLogs', (l) => l.id, 'created_at');
         else if (k === 'pieceLogs') merged.pieceLogs = byId('pieceLogs', (l) => l.id, 'logged_at');
+        else if (k === 'notes') merged.notes = byId('notes', (n) => n.id, 'created_at');
+        else if (k === 'deletedOrderIds') merged.deletedOrderIds = Array.from(new Set([...(cloud.deletedOrderIds || []), ...(local.deletedOrderIds || [])]));
         else if (k === 'devices') merged.devices = byId('devices', (d) => d.fp, null);
         else if (k === 'nextOrderSeq') merged.nextOrderSeq = Math.max(Number(local.nextOrderSeq) || 1, Number(cloud.nextOrderSeq) || 1);
         else if (k === 'settings') {
@@ -3454,6 +5128,10 @@
         merged.orders[i] = { ...o, order_no: newNo };
         merged.activityLogs = (merged.activityLogs || []).map((l) => (l.order_no === oldNo && !(b0.activityLogs || []).some((x) => x.id === l.id) && (local.activityLogs || []).some((x) => x.id === l.id) ? { ...l, order_no: newNo } : l));
       });
+      if (Array.isArray(merged.deletedOrderIds) && merged.deletedOrderIds.length > 0) {
+        const delSet = new Set(merged.deletedOrderIds);
+        merged.orders = (merged.orders || []).filter((o) => !delSet.has(o.id));
+      }
       return merged;
     }
 
@@ -3472,12 +5150,24 @@
       const saveChainRef = useRef(Promise.resolve());
 
       const [currentRole, setCurrentRole] = useState(() => sessionStorage.getItem('sg_active_role') || null);
+      const [serverAuthMode, setServerAuthMode] = useState(false);
+      const [serverDeviceStatus, setServerDeviceStatus] = useState(() => sessionStorage.getItem('sg_device_status') || null); // 'approved' | 'pending' | 'rejected' | null
       const [selectedRole, setSelectedRole] = useState(ROLES[0].role);
       const [pin, setPin] = useState('');
+      const [loginBusy, setLoginBusy] = useState(false);
       const [installPrompt, setInstallPrompt] = useState(null);
 
       const scannedOrderNo = new URLSearchParams(window.location.search).get('scan');
       const myFp = getDeviceFingerprint();
+      const getDeviceLabel = () => {
+        const ua = navigator.userAgent || '';
+        if (/iPhone/i.test(ua)) return 'iPhone Safari';
+        if (/iPad/i.test(ua)) return 'iPad';
+        if (/Android/i.test(ua)) return 'Android Phone';
+        if (/Windows/i.test(ua)) return 'Windows PC';
+        if (/Mac/i.test(ua)) return 'Mac';
+        return ua.slice(0, 32) || 'Browser Device';
+      };
 
       useEffect(() => {
         const handler = (e) => { e.preventDefault(); setInstallPrompt(e); };
@@ -3495,36 +5185,67 @@
         }
       };
 
+      const loadCloudDb = async (client) => {
+        if (!client) return;
+        try {
+          const { data, error } = await client.storage.from('sofa_ops_store').download('db.json');
+          if (data) {
+            const parsed = JSON.parse(await data.text());
+            baseDbRef.current = parsed;
+            cloudReadyRef.current = true;
+            setDb(parsed);
+            localStorage.setItem('sg_cloud_db_cache', JSON.stringify(parsed));
+            setSyncStatus('Synced');
+          } else if (isNotFoundError(error)) {
+            baseDbRef.current = null;
+            cloudReadyRef.current = true;
+            setSyncStatus('Ready');
+          } else {
+            // If storage RLS blocked download (403/400), device is NOT approved on server
+            setSyncStatus('Locked (Approval Needed)');
+          }
+        } catch (e) {
+          setSyncStatus('OFFLINE - changes will not save');
+        }
+      };
+
       useEffect(() => {
         if (!savedKey || savedKey.length < 15) return;
-        const client = createClient(DEFAULT_SUPABASE_URL, savedKey.trim());
+        // Send x-device-fp on every Supabase request for PostgreSQL RLS enforcement
+        const client = createClient(DEFAULT_SUPABASE_URL, savedKey.trim(), {
+          global: { headers: { 'x-device-fp': myFp } }
+        });
         setSupabaseClient(client);
 
+        // Only download db.json if device is already approved (or before RLS SQL is installed)
         (async () => {
-          try {
-            await client.storage.createBucket('sofa_ops_store', { public: false }).catch(() => {});
-            const { data, error } = await client.storage.from('sofa_ops_store').download('db.json');
-            if (data) {
-              const parsed = JSON.parse(await data.text());
-              baseDbRef.current = parsed;
-              cloudReadyRef.current = true;
-              setDb(parsed);
-              localStorage.setItem('sg_cloud_db_cache', JSON.stringify(parsed));
-              setSyncStatus('Synced');
-            } else if (isNotFoundError(error)) {
-              baseDbRef.current = null;       // very first setup: no db.json yet
-              cloudReadyRef.current = true;
-              setSyncStatus('Ready');
+          const { data: approvedFlag, error: rpcErr } = await client.rpc('is_device_approved');
+          if (!rpcErr && typeof approvedFlag === 'boolean') {
+            setServerAuthMode(true);
+            if (approvedFlag) {
+              setServerDeviceStatus('approved');
+              sessionStorage.setItem('sg_device_status', 'approved');
+              await loadCloudDb(client);
             } else {
-              setSyncStatus('OFFLINE - changes will not save');
+              // Unapproved device: load ZERO data and purge local cache
+              localStorage.removeItem('sg_cloud_db_cache');
+              setDb(INITIAL_DB);
+              if (sessionStorage.getItem('sg_active_role')) {
+                setServerDeviceStatus('pending');
+                sessionStorage.setItem('sg_device_status', 'pending');
+              }
             }
-          } catch (e) { setSyncStatus('OFFLINE - changes will not save'); }
+          } else {
+            // Fallback only if device_security_rls.sql has not been installed yet
+            setServerAuthMode(false);
+            await loadCloudDb(client);
+          }
         })();
 
         const channel = client
           .channel('sg-live-sync')
           .on('broadcast', { event: 'db_update' }, ({ payload }) => {
-            if (payload) {
+            if (payload && cloudReadyRef.current) {
               baseDbRef.current = payload;
               setDb(payload);
               localStorage.setItem('sg_cloud_db_cache', JSON.stringify(payload));
@@ -3572,8 +5293,43 @@
         return saveChainRef.current;
       };
 
-      const handleLogin = (e) => {
+      const handleLogin = async (e) => {
         e.preventDefault();
+        if (supabaseClient && savedKey !== 'LOCAL_DIRECT_MODE_KEY_12345') {
+          setLoginBusy(true);
+          try {
+            const { data: res, error } = await supabaseClient.rpc('login_and_check_device', {
+              p_role: selectedRole,
+              p_pin: pin,
+              p_fp: myFp,
+              p_device_name: getDeviceLabel()
+            });
+            if (!error && res) {
+              setServerAuthMode(true);
+              if (!res.ok) {
+                alert(res.error || 'Incorrect 4-digit PIN.');
+                setLoginBusy(false);
+                return;
+              }
+              setServerDeviceStatus(res.status);
+              sessionStorage.setItem('sg_device_status', res.status);
+              sessionStorage.setItem('sg_active_role', selectedRole);
+              setCurrentRole(selectedRole);
+              setPin('');
+              if (res.status === 'approved') {
+                await loadCloudDb(supabaseClient);
+              } else {
+                localStorage.removeItem('sg_cloud_db_cache');
+                setDb(INITIAL_DB);
+              }
+              setLoginBusy(false);
+              return;
+            }
+          } catch (err) {}
+          setLoginBusy(false);
+        }
+
+        // Local fallback when server RLS RPC is not installed
         const expectedPin = db.settings?.pins?.[selectedRole] || '8866';
         if (pin !== expectedPin) {
           alert('Incorrect 4-digit PIN.');
@@ -3582,12 +5338,12 @@
         if (selectedRole === 'admin') {
           const exists = db.devices.find((d) => d.fp === myFp);
           if (!exists || exists.status !== 'approved') {
-            saveDb({ ...db, devices: [...db.devices.filter((d) => d.fp !== myFp), { fp: myFp, role: 'admin', status: 'approved' }] });
+            saveDb({ ...db, devices: [...db.devices.filter((d) => d.fp !== myFp), { fp: myFp, role: 'admin', status: 'approved', device_name: getDeviceLabel(), requested_at: new Date().toISOString() }] });
           }
         } else {
           const exists = db.devices.find((d) => d.fp === myFp);
           if (!exists) {
-            saveDb({ ...db, devices: [...db.devices, { fp: myFp, role: selectedRole, status: 'pending' }] });
+            saveDb({ ...db, devices: [...db.devices, { fp: myFp, role: selectedRole, status: 'pending', device_name: getDeviceLabel(), requested_at: new Date().toISOString() }] });
           }
         }
         sessionStorage.setItem('sg_active_role', selectedRole);
@@ -3676,17 +5432,40 @@
       }
 
       const myDeviceRecord = db.devices.find((d) => d.fp === myFp);
-      if (currentRole !== 'admin' && myDeviceRecord?.status !== 'approved') {
+      const isBlockedByServer = serverAuthMode && serverDeviceStatus !== 'approved';
+      const isBlockedLocally = !serverAuthMode && currentRole !== 'admin' && myDeviceRecord?.status !== 'approved';
+      if (isBlockedByServer || isBlockedLocally) {
+        const isRejected = (serverAuthMode ? serverDeviceStatus : myDeviceRecord?.status) === 'rejected';
         return (
           <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-            <div className="bg-white border border-gray-300 rounded-md p-6 max-w-sm w-full text-center space-y-4">
-              <h2 className="font-bold text-base text-gray-900">Device Authorization Required</h2>
-              <p className="text-xs text-gray-600">
+            <div className="bg-white border border-gray-300 rounded-md p-6 max-w-sm w-full text-center space-y-4 shadow-sm">
+              <h2 className="font-bold text-base text-gray-900">
+                {isRejected ? 'Device Access Rejected' : 'Approval Pending'}
+              </h2>
+              <p className="text-xs text-gray-600 leading-relaxed">
+                Device: <strong>{getDeviceLabel()}</strong><br />
                 Device ID: <strong className="font-mono">{myFp}</strong><br />
-                Ask the Owner (Admin) to approve this device in <strong>Shop Settings & Data</strong>.
+                No shop data is loaded on this device until the Owner (Admin) clicks <strong>Allow</strong> in <strong>Shop Settings & Data</strong>.
               </p>
+              {serverAuthMode && (
+                <button
+                  onClick={async () => {
+                    const { data: ok } = await supabaseClient.rpc('is_device_approved');
+                    if (ok) {
+                      setServerDeviceStatus('approved');
+                      sessionStorage.setItem('sg_device_status', 'approved');
+                      await loadCloudDb(supabaseClient);
+                    } else {
+                      alert('Still waiting for Admin approval.');
+                    }
+                  }}
+                  className="w-full bg-amber-700 hover:bg-amber-800 text-white py-2.5 rounded text-xs font-bold min-h-[44px]"
+                >
+                  Check Approval Status
+                </button>
+              )}
               <button
-                onClick={() => { sessionStorage.removeItem('sg_active_role'); setCurrentRole(null); }}
+                onClick={() => { sessionStorage.removeItem('sg_active_role'); sessionStorage.removeItem('sg_device_status'); setCurrentRole(null); setServerDeviceStatus(null); }}
                 className="w-full bg-gray-900 text-white py-2.5 rounded text-xs font-bold min-h-[44px]"
               >
                 Back to Sign In
@@ -3703,9 +5482,11 @@
             saveDb={saveDb}
             currentRole={currentRole}
             savedKey={savedKey}
+            supabaseClient={supabaseClient}
+            serverAuthMode={serverAuthMode}
             syncStatus={syncStatus}
             triggerInstall={triggerInstall}
-            onLogout={() => { sessionStorage.removeItem('sg_active_role'); setCurrentRole(null); }}
+            onLogout={() => { sessionStorage.removeItem('sg_active_role'); sessionStorage.removeItem('sg_device_status'); setCurrentRole(null); setServerDeviceStatus(null); }}
           />
         );
       }

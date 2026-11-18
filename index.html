@@ -10,7 +10,6 @@
   <link rel="manifest" href="./manifest.json" />
   <link rel="apple-touch-icon" href="./icon-192.png" />
   <title>Shree Gayatri Handloom House - Sofa Cover Dept</title>
-  
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
@@ -18,8 +17,51 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
-  
-  <link rel="stylesheet" href="styles.css" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body, #root {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      max-width: 100vw;
+      overflow-x: hidden;
+      background: #f3f4f6;
+      color: #111827;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      -webkit-text-size-adjust: 100%;
+    }
+    .tabular-nums { font-variant-numeric: tabular-nums; }
+
+    /* Mobile-specific responsive rules (< 768px) */
+    @media (max-width: 767px) {
+      html, body, #root {
+        font-size: 15px;
+      }
+      .mobile-touch-target,
+      button,
+      select,
+      input[type="text"],
+      input[type="tel"],
+      input[type="number"],
+      input[type="date"],
+      input[type="password"] {
+        min-height: 44px;
+        font-size: 15px;
+      }
+      .mobile-label {
+        font-size: 13px !important;
+        line-height: 1.35 !important;
+      }
+    }
+
+    @media print {
+      body * { visibility: hidden; }
+      #printable-area, #printable-area * { visibility: visible; }
+      #printable-area { position: fixed; left: 0; top: 0; width: 100%; margin: 0 !important; padding: 0 !important; box-shadow: none !important; background: #fff !important; }
+      .no-print { display: none !important; }
+    }
+  </style>
 </head>
 <body>
   <div id="root"></div>
@@ -32,7 +74,3459 @@
     }
   </script>
 
-  <!-- Load the React App -->
-  <script type="text/babel" src="app.js"></script>
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo } = React;
+    const { createClient } = window.supabase;
+
+    const DEFAULT_SUPABASE_URL = 'https://qsyubbefhttdfiglbtbt.supabase.co';
+
+    // Capture setup_key from URL for instant staff onboarding
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlSetupKey = urlParams.get('setup_key');
+    if (urlSetupKey && urlSetupKey.length > 15) {
+      localStorage.setItem('sg_supabase_key', urlSetupKey.trim());
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    // Simple Lucide Icon wrapper
+    function Icon({ name, size = 16, className = '' }) {
+      const ref = useRef(null);
+      useEffect(() => {
+        if (ref.current && window.lucide && window.lucide.icons[name]) {
+          const svg = window.lucide.createElement(window.lucide.icons[name]);
+          svg.setAttribute('width', size);
+          svg.setAttribute('height', size);
+          if (className) svg.setAttribute('class', className);
+          ref.current.innerHTML = '';
+          ref.current.appendChild(svg);
+        }
+      }, [name, size, className]);
+      return <span ref={ref} className="inline-flex items-center justify-center shrink-0" />;
+    }
+
+    function getDeviceFingerprint() {
+      let fp = localStorage.getItem('sg_device_fp');
+      if (!fp) {
+        fp = 'DEV-' + Math.random().toString(36).substring(2, 10).toUpperCase();
+        localStorage.setItem('sg_device_fp', fp);
+      }
+      return fp;
+    }
+
+    // Formatting Helpers: Indian Rupee Grouping (1,25,000) & DD/MM/YYYY
+    function formatINR(num) {
+      const val = Math.round(Number(num) || 0);
+      return '₹' + val.toLocaleString('en-IN');
+    }
+
+    function formatDateDDMMYYYY(dateInput) {
+      if (!dateInput) return '—';
+      const d = new Date(dateInput);
+      if (isNaN(d.getTime())) return String(dateInput);
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const yyyy = d.getFullYear();
+      return `${dd}/${mm}/${yyyy}`;
+    }
+
+    function formatDateTimeDDMMYYYY(dateInput) {
+      if (!dateInput) return '—';
+      const d = new Date(dateInput);
+      if (isNaN(d.getTime())) return String(dateInput);
+      const time = d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+      return `${formatDateDDMMYYYY(d)} ${time}`;
+    }
+
+    function getDueUrgency(promisedDateStr, status) {
+      if (!promisedDateStr || status === 'Delivered') return null;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const due = new Date(promisedDateStr + 'T00:00:00');
+      const diffDays = Math.round((due - today) / 86400000);
+      if (diffDays < 0) return { label: `OVERDUE (${Math.abs(diffDays)}d)`, level: 'overdue' };
+      if (diffDays === 0) return { label: 'DUE TODAY', level: 'today' };
+      if (diffDays === 1) return { label: 'DUE TOMORROW', level: 'tomorrow' };
+      return null;
+    }
+
+    function getHoursInStage(order) {
+      const refTime = order.stage_changed_at || order.created_at;
+      if (!refTime) return 0;
+      return Math.max(0, (Date.now() - new Date(refTime).getTime()) / 3600000);
+    }
+
+    // Core Business Math (Pure Integer Math — zero floating-point drift, never NaN)
+    function parseSegmentsList(input) {
+      if (!input) return [];
+      const raw = Array.isArray(input) ? input.join('+') : String(input);
+      return raw
+        .split(/[+,\s]+/)
+        .map((s) => parseInt(s.trim(), 10))
+        .filter((n) => Number.isInteger(n) && n > 0);
+    }
+
+    function toInt(val) {
+      const n = parseInt(String(val ?? '').replace(/[^0-9-]/g, ''), 10);
+      return Number.isInteger(n) ? n : 0;
+    }
+
+    function calcEstimate(form = {}) {
+      const seatingList = parseSegmentsList(form.seating_segments ?? form.seatingSegments);
+      const seatingInches = seatingList.reduce((acc, n) => acc + n, 0);
+      const seatingQuarters = seatingInches > 0 ? Math.ceil(seatingInches / 3) : 0;
+      const seatingFeet = seatingQuarters / 4;
+      const seatingFeetStr = seatingFeet.toFixed(2);
+      const seatingRateInt = Math.max(0, toInt(form.seating_rate ?? form.seatingRate));
+      const seatingAmount = Math.round((seatingQuarters * seatingRateInt) / 4);
+
+      const backUnit = (form.back_unit ?? form.backUnit) === 'Pcs' ? 'Pcs' : 'Inches';
+      const backList = parseSegmentsList(form.back_segments ?? form.backSegments);
+      const backRaw = backList.reduce((acc, n) => acc + n, 0);
+      const backRateInt = Math.max(0, toInt(form.back_rate ?? form.backRate));
+
+      let backQuarters = 0;
+      let backBillable = 0;
+      let backBillableStr = '0';
+      let backAmount = 0;
+
+      if (backUnit === 'Inches') {
+        backQuarters = backRaw > 0 ? Math.ceil(backRaw / 3) : 0;
+        backBillable = backQuarters / 4;
+        backBillableStr = backBillable.toFixed(2);
+        backAmount = Math.round((backQuarters * backRateInt) / 4);
+      } else {
+        backBillable = backRaw;
+        backBillableStr = String(backRaw);
+        backAmount = backRaw * backRateInt;
+      }
+
+      const visitChargeInt = Math.max(0, toInt(form.visit_charge ?? form.visitCharge));
+      const advanceInt = Math.max(0, toInt(form.advance_amount ?? form.advanceAmount));
+      const total = seatingAmount + backAmount + visitChargeInt;
+      const balance = total - advanceInt;
+
+      const seatingExpr = seatingList.length ? seatingList.join(' + ') : '0';
+      const backExpr = backList.length ? backList.join(' + ') : '0';
+
+      const seatingLine = `Seating: ${seatingExpr} = ${seatingInches} in = ${seatingFeetStr} ft × Rs ${seatingRateInt.toLocaleString('en-IN')} = Rs ${seatingAmount.toLocaleString('en-IN')}`;
+      const backLine = backUnit === 'Inches'
+        ? `Back: ${backExpr} = ${backRaw} in = ${backBillableStr} ft × Rs ${backRateInt.toLocaleString('en-IN')} = Rs ${backAmount.toLocaleString('en-IN')}`
+        : `Back: ${backExpr} = ${backRaw} pcs × Rs ${backRateInt.toLocaleString('en-IN')} = Rs ${backAmount.toLocaleString('en-IN')}`;
+      const summaryLine = `Estimate total: Rs ${total.toLocaleString('en-IN')} | Advance: Rs ${advanceInt.toLocaleString('en-IN')} | Balance: Rs ${balance.toLocaleString('en-IN')}`;
+
+      return {
+        seatingList,
+        seatingInches,
+        seatingQuarters,
+        seatingFeet,
+        seatingFeetStr,
+        seatingRateInt,
+        seatingAmount,
+        backUnit,
+        backList,
+        backRaw,
+        backQuarters,
+        backBillable,
+        backBillableStr,
+        backRateInt,
+        backAmount,
+        visitChargeInt,
+        advanceInt,
+        total,
+        balance,
+        seatingLine,
+        backLine,
+        summaryLine
+      };
+    }
+    const calculateEstimate = calcEstimate;
+
+    const WhatsAppService = {
+      formatPhone(mobile) {
+        const digits = String(mobile || '').replace(/\D/g, '');
+        return digits.length === 10 ? `91${digits}` : digits;
+      },
+      getLink(type, order) {
+        const phone = this.formatPhone(order.mobile);
+        let msg = '';
+        if (type === 'receipt') {
+          msg = `Namaste ${order.customer_name} ji! Aapka custom Sofa Cover order confirm ho gaya hai.\n\nOrder No: *${order.order_no}*\nDesign: ${order.design_name}\nTotal Estimate: ${formatINR(order.estimate_total)}\nAdvance Paid: ${formatINR(order.advance_amount)}\nBalance Due: *${formatINR(order.balance_amount)}*\nDelivery Date: ${formatDateDDMMYYYY(order.promised_date)}\n\n- Shree Gayatri Handloom House (Fixed Rate Shop)`;
+        } else if (type === 'ready') {
+          msg = `Namaste ${order.customer_name} ji! Aapka Sofa Cover (Order *${order.order_no}* - ${order.design_name}) bankar *READY* hai.\nBalance Amount: ${formatINR(order.balance_amount)}.\nAap shop se collect kar sakte hain. Dhanyavaad!\n- Shree Gayatri Handloom House`;
+        } else if (type === 'followup') {
+          msg = `Namaste ${order.customer_name} ji! Shree Gayatri Handloom House se aapke Sofa Cover estimate (*${order.order_no}* - ${order.design_name}, Estimate: ${formatINR(order.estimate_total)}) ke baare mein follow-up kar rahe hain. Order confirm karne ke liye reply karein. Dhanyavaad!`;
+        } else {
+          msg = `Thank you ${order.customer_name} ji! Order *${order.order_no}* deliver ho chuka hai. Umeed hai aapko fitting aur design pasand aaya hoga. Fir se padhariye!\n- Shree Gayatri Handloom House`;
+        }
+        return `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
+      }
+    };
+
+    // Restrained Status Chips (Max 5 neutral/muted tones)
+    function StatusChip({ status }) {
+      const map = {
+        'Measurement Pending': 'bg-gray-100 text-gray-700 border-gray-300',
+        'Estimate Given': 'bg-gray-100 text-gray-800 border-gray-400',
+        'Cutting Pending': 'bg-amber-50 text-amber-800 border-amber-300',
+        'With Tailor': 'bg-blue-50 text-blue-800 border-blue-300',
+        'Silai Done': 'bg-teal-50 text-teal-800 border-teal-300',
+        'Ready': 'bg-emerald-50 text-emerald-800 border-emerald-300',
+        'Delivered': 'bg-slate-800 text-white border-slate-800'
+      };
+      const cls = map[status] || 'bg-gray-100 text-gray-700 border-gray-300';
+      return (
+        <span className={`inline-flex items-center px-2.5 py-0.5 rounded text-xs font-semibold border whitespace-nowrap ${cls}`}>
+          {status}
+        </span>
+      );
+    }
+
+    const INITIAL_DB = {
+      nextOrderSeq: 1,
+      settings: {
+        sticker_width_mm: 60,
+        sticker_height_mm: 40,
+        pins: {
+          admin: '8866',
+          sales: '1111',
+          cutting: '2222',
+          tailor_1: '3333',
+          tailor_2: '4444'
+        },
+        tailorRates: {
+          tailor_1: 150,
+          tailor_2: 150
+        },
+        stageAlertHours: {
+          'Cutting Pending': 24,
+          'With Tailor': 48,
+          'Silai Done': 12,
+          'Ready': 72
+        }
+      },
+      salesmen: ['Ramesh Bhai', 'Suresh Bhai', 'Jignesh Bhai'],
+      devices: [],
+      orders: [],
+      pieceLogs: [],
+      activityLogs: []
+    };
+
+    // Generate 30 Realistic Demo Orders for testing all reports & workflows
+    function buildDemoDataset(currentDb) {
+      const customers = [
+        ['Rajeshbhai Patel', '9825011223', '14, Shantinagar Society, Maninagar'],
+        ['Meenaben Shah', '9879044556', 'B-202, Suramya Residency, Kankaria'],
+        ['Hiteshbhai Desai', '9426077889', '8, Ghodasar Cross Road, Ahmedabad'],
+        ['Nileshbhai Joshi', '9824033445', '45, Rambaug Society, Maninagar'],
+        ['Kiranben Mehta', '9909988776', '12, Pushpkunj, Kankaria'],
+        ['Pareshbhai Trivedi', '9825366778', 'C-104, Kalrav Flat, Maninagar'],
+        ['Dipakbhai Modi', '9727711990', '22, Dakshini Society, Maninagar'],
+        ['Bhavnaben Parekh', '9898022334', '9, Anupam Colony, Khokhra'],
+        ['Maheshbhai Solanki', '9427055667', '31, Jawahar Chowk, Maninagar'],
+        ['Sonalben Amin', '9825199001', 'A-401, Devnandan Heights, Isanpur'],
+        ['Ketanbhai Thakkar', '9925044332', '18, LG Corner, Maninagar'],
+        ['Rakeshbhai Vyas', '9879566112', '7, Krishnabaug, Maninagar'],
+        ['Alkabhen Pandya', '9426388990', '52, Sindhi Market Road, Maninagar'],
+        ['Chiragbhai Gajjar', '9824511009', '11, Uttamnagar, Maninagar'],
+        ['Pritiben Dave', '9909022118', 'D-302, Shivalik Avenue, Ghodasar']
+      ];
+      const designs = [
+        'Velvet Jacquard Beige 402', 'Chenille Royal Maroon 118', 'Jute Texture Grey 905',
+        'Suede Brown Diamond 310', 'Cotton Dobby Cream 204', 'Embossed Gold Floral 512',
+        'Heavy Turkish Blue 701', 'Linen Weave Olive 615'
+      ];
+      const salesmen = currentDb.salesmen.length ? currentDb.salesmen : ['Ramesh Bhai', 'Suresh Bhai', 'Jignesh Bhai'];
+      const modes = ['Cash', 'UPI', 'Card'];
+      const statuses = [
+        'Measurement Pending', 'Estimate Given', 'Estimate Given',
+        'Cutting Pending', 'Cutting Pending', 'Cutting Pending',
+        'With Tailor', 'With Tailor', 'With Tailor', 'With Tailor',
+        'Silai Done', 'Silai Done',
+        'Ready', 'Ready', 'Ready',
+        'Delivered', 'Delivered', 'Delivered', 'Delivered', 'Delivered'
+      ];
+
+      const now = Date.now();
+      const demoOrders = [];
+      const demoPieceLogs = [];
+      const demoActivity = [];
+
+      for (let i = 1; i <= 30; i++) {
+        const cust = customers[i % customers.length];
+        const design = designs[i % designs.length];
+        const salesman = salesmen[i % salesmen.length];
+        const status = statuses[i % statuses.length];
+        const isVisit = i % 4 === 0;
+        const visitCharge = isVisit ? 200 : 0;
+
+        const seatSeg = i % 3 === 0 ? '81+96+103+58' : i % 2 === 0 ? '72+72+54' : '84+60+60';
+        const seatRate = i % 2 === 0 ? 180 : 210;
+        const backUnit = i % 4 === 1 ? 'Pcs' : 'Inches';
+        const backSeg = backUnit === 'Pcs' ? '2+2+3' : '80+80+70';
+        const backRate = backUnit === 'Pcs' ? 120 : 140;
+        const totalPcs = 6 + (i % 7);
+
+        const calc = calculateEstimate({
+          seatingSegments: seatSeg,
+          seatingRate: seatRate,
+          backUnit,
+          backSegments: backSeg,
+          backRate,
+          advanceAmount: 0,
+          visitCharge
+        });
+
+        const isUnconfirmed = ['Measurement Pending', 'Estimate Given'].includes(status);
+        const advance = isUnconfirmed ? 0 : (status === 'Delivered' && i % 2 === 0 ? calc.total : Math.round((calc.total * 0.5) / 100) * 100);
+        const balance = calc.total - advance;
+
+        const createdDaysAgo = 1 + (i % 14);
+        const createdAt = new Date(now - createdDaysAgo * 86400000).toISOString();
+        const dueOffsetDays = status === 'Delivered' ? -1 : (i % 7) - 3;
+        const promisedDate = new Date(now + dueOffsetDays * 86400000).toISOString().split('T')[0];
+
+        const stageAgeHours = (i % 5 === 0) ? 54 : (4 + (i % 18));
+        const stageChangedAt = new Date(now - stageAgeHours * 3600000).toISOString();
+        const assignedTailor = ['With Tailor', 'Silai Done', 'Ready', 'Delivered'].includes(status)
+          ? (i % 2 === 0 ? 'tailor_1' : 'tailor_2')
+          : null;
+
+        const orderNo = 'SC-' + String(900 + i).padStart(4, '0');
+        const orderId = 'DEMO-' + i;
+
+        demoOrders.push({
+          id: orderId,
+          order_no: orderNo,
+          is_demo: true,
+          created_at: createdAt,
+          stage_changed_at: stageChangedAt,
+          customer_name: cust[0],
+          mobile: cust[1],
+          address: cust[2],
+          home_delivery: i % 3 === 0,
+          measurement_source: isVisit ? 'Shop visit' : 'Customer brought',
+          visit_staff_name: isVisit ? salesman : '',
+          visit_charge: visitCharge,
+          design_name: design,
+          seating_segments: seatSeg,
+          seating_total_inches: calc.seatingInches,
+          seating_feet: calc.seatingFeet,
+          seating_rate: seatRate,
+          back_unit: backUnit,
+          back_segments: backSeg,
+          back_total_raw: calc.backRaw,
+          back_billable_qty: calc.backBillable,
+          back_rate: backRate,
+          tailor_notes: i % 2 === 0 ? 'Contrast piping on front border, double stitch corners' : 'Standard elastic fit with side lace',
+          total_pcs: totalPcs,
+          estimate_total: calc.total,
+          advance_amount: advance,
+          balance_amount: balance,
+          payment_mode: modes[i % modes.length],
+          salesman_name: salesman,
+          promised_date: promisedDate,
+          status,
+          assigned_tailor: assignedTailor
+        });
+
+        demoActivity.push({
+          id: 'DEMO-ACT-' + i,
+          is_demo: true,
+          order_no: orderNo,
+          action: `Created & moved to ${status}`,
+          role: 'sales',
+          created_at: createdAt
+        });
+
+        if (['Silai Done', 'Ready', 'Delivered'].includes(status) && assignedTailor) {
+          demoPieceLogs.push({
+            id: 'DEMO-LOG-' + i,
+            is_demo: true,
+            order_no: orderNo,
+            tailor_role: assignedTailor,
+            pcs_count: totalPcs,
+            rate_at_time: 150,
+            is_manual_adjustment: false,
+            logged_at: stageChangedAt
+          });
+        }
+      }
+
+      return {
+        ...currentDb,
+        orders: [...demoOrders, ...currentDb.orders.filter((o) => !o.is_demo)],
+        pieceLogs: [...demoPieceLogs, ...currentDb.pieceLogs.filter((l) => !l.is_demo)],
+        activityLogs: [...demoActivity, ...currentDb.activityLogs.filter((a) => !a.is_demo)]
+      };
+    }
+
+    // =========================================================================
+    // STICKER PRINT MODAL (Single & Batch Print with Reprint Logging)
+    // =========================================================================
+    function StickerPrintModal({ ordersList, settings, onClose, onLogReprint }) {
+      const w = settings?.sticker_width_mm || 60;
+      const h = settings?.sticker_height_mm || 40;
+
+      const handlePrint = () => {
+        const style = document.createElement('style');
+        style.innerHTML = `@page { size: ${w}mm ${h}mm; margin: 0; }`;
+        document.head.appendChild(style);
+        ordersList.forEach((ord) => onLogReprint && onLogReprint(ord));
+        window.print();
+        document.head.removeChild(style);
+      };
+
+      const handleCopyCSV = () => {
+        const header = 'OrderNo,Design,Seating,Back,TotalPcs,Notes,PromisedDate';
+        const rows = ordersList.map((o) =>
+          `"${o.order_no}","${o.design_name}","${o.seating_segments} (${o.seating_feet}ft)","${o.back_segments} (${o.back_billable_qty} ${o.back_unit})","${o.total_pcs}","${(o.tailor_notes || '').replace(/"/g, '""')}","${formatDateDDMMYYYY(o.promised_date)}"`
+        );
+        navigator.clipboard.writeText([header, ...rows].join('\n'));
+        alert(`Copied ${ordersList.length} sticker row(s) as CSV.`);
+      };
+
+      return (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-md border border-gray-300 max-w-lg w-full p-4 md:p-5 shadow-lg">
+            <div className="flex justify-between items-center border-b border-gray-200 pb-3 mb-4">
+              <div>
+                <h3 className="font-bold text-base text-gray-900">
+                  {ordersList.length > 1 ? `Batch Cutting Stickers (${ordersList.length} Orders)` : `Cutting Sticker — ${ordersList[0].order_no}`}
+                </h3>
+                <p className="text-xs text-gray-500">Label size: {w} × {h} mm • Thermal / PDF ready</p>
+              </div>
+              <button onClick={onClose} className="p-2 min-w-[44px] min-h-[44px] text-gray-500 hover:bg-gray-100 rounded inline-flex items-center justify-center">
+                <Icon name="X" size={18} />
+              </button>
+            </div>
+
+            <div id="printable-area" className="max-h-80 overflow-y-auto bg-gray-100 p-4 rounded border border-gray-200 space-y-3 mb-4">
+              {ordersList.map((order) => {
+                const qrUrl = `${window.location.origin}${window.location.pathname}?scan=${order.order_no}`;
+                const qrImgSrc = `https://api.qrserver.com/v1/create-qr-code/?size=140x140&margin=0&data=${encodeURIComponent(qrUrl)}`;
+                return (
+                  <div
+                    key={order.id}
+                    style={{ width: `${w}mm`, height: `${h}mm`, pageBreakAfter: 'always' }}
+                    className="bg-white border border-black p-1.5 flex flex-col justify-between text-black leading-tight overflow-hidden mx-auto"
+                  >
+                    <div className="flex justify-between items-start border-b border-black pb-0.5">
+                      <div>
+                        <div className="font-bold text-sm tracking-tight">{order.order_no}</div>
+                        <div className="text-[9px] font-semibold truncate max-w-[34mm]">{order.design_name}</div>
+                      </div>
+                      <img src={qrImgSrc} alt="QR" className="w-[9mm] h-[9mm]" />
+                    </div>
+                    <div className="text-[8.5px] space-y-0.5 my-0.5">
+                      <div><strong>S:</strong> {order.seating_segments} = <b>{order.seating_feet}ft</b></div>
+                      <div><strong>B:</strong> {order.back_segments} = <b>{order.back_billable_qty}{order.back_unit === 'Inches' ? 'ft' : 'pcs'}</b> ({order.total_pcs} pcs)</div>
+                      {order.tailor_notes && (
+                        <div className="truncate italic border-t border-dashed border-gray-500 pt-0.5">
+                          Note: {order.tailor_notes}
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-[8px] font-bold border-t border-black pt-0.5 flex justify-between">
+                      <span>DEL: {formatDateDDMMYYYY(order.promised_date)}</span>
+                      <span>PCS: {order.total_pcs}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2">
+              <button onClick={handlePrint} className="flex-1 bg-amber-700 hover:bg-amber-800 text-white py-2.5 px-4 rounded font-semibold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]">
+                <Icon name="Printer" size={16} /> Print {ordersList.length > 1 ? `All (${ordersList.length})` : 'Sticker'}
+              </button>
+              <button onClick={handleCopyCSV} className="border border-gray-300 hover:bg-gray-50 text-gray-800 py-2.5 px-4 rounded font-semibold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]">
+                <Icon name="Copy" size={16} /> Copy CSV
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ORDER TIMELINE MODAL
+    // =========================================================================
+    function OrderTimelineModal({ order, activityLogs, onClose }) {
+      const logs = activityLogs.filter((l) => l.order_no === order.order_no);
+      return (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-md border border-gray-300 max-w-lg w-full p-4 md:p-5 shadow-lg">
+            <div className="flex justify-between items-center border-b border-gray-200 pb-3 mb-4">
+              <div>
+                <h3 className="font-bold text-base text-gray-900">Order Audit Timeline — {order.order_no}</h3>
+                <p className="text-xs text-gray-500">{order.customer_name} • {order.design_name}</p>
+              </div>
+              <button onClick={onClose} className="p-2 min-w-[44px] min-h-[44px] text-gray-500 hover:bg-gray-100 rounded inline-flex items-center justify-center">
+                <Icon name="X" size={18} />
+              </button>
+            </div>
+            <div className="max-h-80 overflow-y-auto space-y-3">
+              {logs.length === 0 ? (
+                <p className="text-sm text-gray-500 py-6 text-center">No activity events logged for this order yet.</p>
+              ) : (
+                logs.map((l) => (
+                  <div key={l.id} className="flex items-start gap-3 border-l-2 border-amber-600 pl-3 py-1">
+                    <div className="flex-1">
+                      <div className="text-sm font-medium text-gray-900">{l.action}</div>
+                      <div className="text-xs text-gray-500">
+                        By <span className="font-semibold uppercase">{l.role}</span> • {formatDateTimeDDMMYYYY(l.created_at)}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // KEYBOARD-FIRST ONE-SCREEN ORDER ENTRY + REVIEW & CONFIRM FLOW
+    // (Stacks cleanly in 1 column on mobile < 768px, 3-col split on desktop)
+    // =========================================================================
+    function OrderEntryScreen({ existingOrder, allOrders, salesmen, currentRole, onCancel, onCommitOrder }) {
+      const isConfirmed = existingOrder && !['Measurement Pending', 'Estimate Given'].includes(existingOrder.status);
+      const canEditSpecs = !isConfirmed || currentRole === 'admin';
+
+      const draftKey = existingOrder ? `sg_draft_${existingOrder.id}` : 'sg_draft_new_order';
+
+      const [form, setForm] = useState(() => {
+        if (!existingOrder) {
+          const savedDraft = localStorage.getItem(draftKey);
+          if (savedDraft) {
+            try { return JSON.parse(savedDraft); } catch (e) {}
+          }
+        }
+        return {
+          customer_name: existingOrder?.customer_name || '',
+          mobile: existingOrder?.mobile || '',
+          address: existingOrder?.address || '',
+          home_delivery: existingOrder?.home_delivery || false,
+          measurement_source: existingOrder?.measurement_source || 'Customer brought',
+          visit_staff_name: existingOrder?.visit_staff_name || '',
+          visit_charge: existingOrder?.visit_charge || 0,
+          design_name: existingOrder?.design_name || '',
+          seating_segments: existingOrder?.seating_segments || '',
+          seating_rate: existingOrder?.seating_rate || '',
+          back_unit: existingOrder?.back_unit || 'Inches',
+          back_segments: existingOrder?.back_segments || '',
+          back_rate: existingOrder?.back_rate || '',
+          tailor_notes: existingOrder?.tailor_notes || '',
+          total_pcs: existingOrder?.total_pcs || '',
+          advance_amount: existingOrder?.advance_amount || 0,
+          payment_mode: existingOrder?.payment_mode || 'Cash',
+          salesman_name: existingOrder?.salesman_name || (salesmen[0] || ''),
+          promised_date: existingOrder?.promised_date || ''
+        };
+      });
+
+      const [draftSavedAt, setDraftSavedAt] = useState(null);
+      const [reviewMode, setReviewMode] = useState(false);
+      const [errorMsg, setErrorMsg] = useState('');
+
+      useEffect(() => {
+        if (!existingOrder) {
+          localStorage.setItem(draftKey, JSON.stringify(form));
+          setDraftSavedAt(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+        }
+      }, [form]);
+
+      const matchingPastOrders = useMemo(() => {
+        const cleanMob = String(form.mobile || '').replace(/\D/g, '');
+        if (cleanMob.length < 10) return [];
+        return allOrders.filter(
+          (o) => String(o.mobile || '').replace(/\D/g, '').endsWith(cleanMob.slice(-10)) && o.id !== existingOrder?.id
+        );
+      }, [form.mobile, allOrders]);
+
+      const handleMobileChange = (val) => {
+        const clean = val.replace(/\D/g, '').slice(0, 10);
+        const updates = { mobile: clean };
+        if (clean.length === 10) {
+          const prev = allOrders.find((o) => String(o.mobile || '').replace(/\D/g, '').endsWith(clean));
+          if (prev) {
+            if (!form.customer_name) updates.customer_name = prev.customer_name;
+            if (!form.address && prev.address) updates.address = prev.address;
+          }
+        }
+        setForm((f) => ({ ...f, ...updates }));
+      };
+
+      const formRef = useRef(null);
+      const handleFieldKeyDown = (e, isSegmentField = false) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        if (isSegmentField) {
+          const val = e.target.value.trim();
+          if (val && !val.endsWith('+')) {
+            const fieldName = e.target.name;
+            setForm((f) => ({ ...f, [fieldName]: val + '+' }));
+            return;
+          }
+        }
+        const focusables = Array.from(formRef.current.querySelectorAll('input:not([disabled]), select:not([disabled]), textarea:not([disabled])'));
+        const idx = focusables.indexOf(e.target);
+        if (idx > -1 && idx < focusables.length - 1) {
+          focusables[idx + 1].focus();
+        }
+      };
+
+      const calc = calcEstimate(form);
+
+      const validateAndOpenReview = () => {
+        setErrorMsg('');
+        if (!form.customer_name.trim() || form.mobile.length < 10 || !form.design_name.trim()) {
+          setErrorMsg('Please enter Customer Name, 10-digit Mobile Number, and Design Name.');
+          return;
+        }
+        if (!form.seating_segments.trim() || !form.salesman_name || !form.promised_date || !form.total_pcs) {
+          setErrorMsg('To confirm an order, Seating Measurements, Salesman, Promised Date, and Total Pieces are required.');
+          return;
+        }
+        setReviewMode(true);
+      };
+
+      const finalizeSave = (targetStatus, afterAction = 'none') => {
+        setErrorMsg('');
+        if (!form.customer_name.trim() || !form.mobile.trim() || !form.design_name.trim()) {
+          setErrorMsg('Customer Name, Mobile Number, and Design Name are required.');
+          return;
+        }
+        const nextStatus = targetStatus === 'Confirmed' ? 'Cutting Pending' : targetStatus;
+        const payload = {
+          ...form,
+          seating_total_inches: calc.seatingInches,
+          seating_feet: calc.seatingFeet,
+          back_total_raw: calc.backRaw,
+          back_billable_qty: calc.backBillable,
+          estimate_total: calc.total,
+          advance_amount: parseFloat(form.advance_amount) || 0,
+          balance_amount: calc.balance,
+          total_pcs: parseInt(form.total_pcs) || 1,
+          visit_charge: parseFloat(form.visit_charge) || 0,
+          seating_rate: parseFloat(form.seating_rate) || 0,
+          back_rate: parseFloat(form.back_rate) || 0,
+          status: nextStatus
+        };
+        if (!existingOrder) localStorage.removeItem(draftKey);
+        onCommitOrder(payload, targetStatus === 'Confirmed', afterAction);
+      };
+
+      return (
+        <div className="bg-white border border-gray-300 rounded-md shadow-sm">
+          {/* Top Bar */}
+          <div className="px-4 md:px-5 py-3.5 border-b border-gray-200 flex flex-wrap justify-between items-center gap-3 bg-gray-50">
+            <div className="flex items-center gap-3">
+              <button onClick={onCancel} className="px-3 py-2 border border-gray-300 bg-white hover:bg-gray-100 rounded text-xs font-semibold text-gray-700 inline-flex items-center gap-1.5 min-h-[44px] md:min-h-0">
+                <Icon name="ArrowLeft" size={14} /> Back to Queue
+              </button>
+              <div>
+                <h2 className="font-bold text-base text-gray-900">
+                  {existingOrder ? `Edit Order ${existingOrder.order_no}` : 'New Sofa Cover Order / Estimate'}
+                </h2>
+                <p className="text-xs text-gray-500 hidden sm:block">
+                  Keyboard mode: Press <kbd className="px-1 py-0.5 bg-gray-200 rounded text-[11px]">Enter</kbd> to advance fields or add <code className="font-bold">+</code> between segments
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              {!existingOrder && draftSavedAt && (
+                <span className="text-xs text-gray-500">Draft autosaved at {draftSavedAt}</span>
+              )}
+              {!existingOrder && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    localStorage.removeItem(draftKey);
+                    setForm({
+                      customer_name: '', mobile: '', address: '', home_delivery: false,
+                      measurement_source: 'Customer brought', visit_staff_name: '', visit_charge: 0,
+                      design_name: '', seating_segments: '', seating_rate: '', back_unit: 'Inches',
+                      back_segments: '', back_rate: '', tailor_notes: '', total_pcs: '',
+                      advance_amount: 0, payment_mode: 'Cash', salesman_name: salesmen[0] || '', promised_date: ''
+                    });
+                  }}
+                  className="text-xs text-gray-600 hover:text-gray-900 underline py-2 px-1"
+                >
+                  Clear Form
+                </button>
+              )}
+            </div>
+          </div>
+
+          {errorMsg && (
+            <div className="mx-4 md:mx-5 mt-4 p-3 bg-red-50 border border-red-300 text-red-800 rounded text-sm font-medium flex items-center gap-2">
+              <Icon name="AlertCircle" size={16} /> {errorMsg}
+            </div>
+          )}
+
+          {/* Split Screen: Form Left (2 cols on lg) + Live Estimate Right (1 col on lg, stacked 1 col on mobile) */}
+          <div ref={formRef} className="p-4 md:p-5 grid grid-cols-1 lg:grid-cols-3 gap-5 md:gap-6">
+            <div className="lg:col-span-2 space-y-5">
+              {/* Section 1: Customer Details */}
+              <div className="border border-gray-200 rounded p-3.5 md:p-4 space-y-3.5">
+                <div className="text-xs font-bold uppercase tracking-wider text-gray-500">1. Customer & Delivery Details</div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Mobile Number (10 digits) *</label>
+                    <input
+                      autoFocus
+                      type="tel"
+                      placeholder="98250XXXXX"
+                      className="w-full border border-gray-300 focus:border-amber-600 focus:outline-none rounded px-3 py-2 text-sm tabular-nums"
+                      value={form.mobile}
+                      onChange={(e) => handleMobileChange(e.target.value)}
+                      onKeyDown={(e) => handleFieldKeyDown(e)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Customer Name *</label>
+                    <input
+                      placeholder="Full Name"
+                      className="w-full border border-gray-300 focus:border-amber-600 focus:outline-none rounded px-3 py-2 text-sm"
+                      value={form.customer_name}
+                      onChange={(e) => setForm({ ...form, customer_name: e.target.value })}
+                      onKeyDown={(e) => handleFieldKeyDown(e)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Salesman *</label>
+                    <select
+                      className="w-full border border-gray-300 focus:border-amber-600 focus:outline-none rounded px-3 py-2 text-sm bg-white"
+                      value={form.salesman_name}
+                      onChange={(e) => setForm({ ...form, salesman_name: e.target.value })}
+                      onKeyDown={(e) => handleFieldKeyDown(e)}
+                    >
+                      <option value="">Select Salesman</option>
+                      {salesmen.map((s) => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                {matchingPastOrders.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-900 flex flex-wrap justify-between items-center gap-2">
+                    <span>
+                      <strong>Returning Customer:</strong> Found {matchingPastOrders.length} past order(s) — Latest: <b>{matchingPastOrders[0].order_no}</b> ({matchingPastOrders[0].design_name}, {formatDateDDMMYYYY(matchingPastOrders[0].created_at)})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const prev = matchingPastOrders[0];
+                        setForm((f) => ({
+                          ...f,
+                          seating_segments: f.seating_segments || prev.seating_segments,
+                          back_unit: prev.back_unit || f.back_unit,
+                          back_segments: f.back_segments || prev.back_segments,
+                          total_pcs: f.total_pcs || prev.total_pcs
+                        }));
+                      }}
+                      className="px-3 py-2 bg-amber-700 text-white rounded font-semibold min-h-[44px] md:min-h-0"
+                    >
+                      Copy Past Measurements
+                    </button>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 pt-1">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Measurement Source</label>
+                    <select
+                      className="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-white"
+                      value={form.measurement_source}
+                      onChange={(e) => setForm({ ...form, measurement_source: e.target.value })}
+                      onKeyDown={(e) => handleFieldKeyDown(e)}
+                    >
+                      <option>Customer brought</option>
+                      <option>Shop visit</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Promised Delivery Date *</label>
+                    <input
+                      type="date"
+                      className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                      value={form.promised_date}
+                      onChange={(e) => setForm({ ...form, promised_date: e.target.value })}
+                      onKeyDown={(e) => handleFieldKeyDown(e)}
+                    />
+                  </div>
+                  <div className="flex items-center pt-1 md:pt-5">
+                    <label className="inline-flex items-center gap-2.5 cursor-pointer text-sm font-medium text-gray-800 min-h-[44px]">
+                      <input
+                        type="checkbox"
+                        className="w-5 h-5 accent-amber-700"
+                        checked={form.home_delivery}
+                        onChange={(e) => setForm({ ...form, home_delivery: e.target.checked })}
+                      />
+                      Home Delivery Required
+                    </label>
+                  </div>
+                </div>
+
+                {form.measurement_source === 'Shop visit' && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 bg-gray-50 p-3 rounded border border-gray-200">
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Staff Who Visited</label>
+                      <input
+                        className="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-white"
+                        value={form.visit_staff_name}
+                        onChange={(e) => setForm({ ...form, visit_staff_name: e.target.value })}
+                        onKeyDown={(e) => handleFieldKeyDown(e)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Visit Charge (₹)</label>
+                      <input
+                        type="number"
+                        className="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-white tabular-nums"
+                        value={form.visit_charge}
+                        onChange={(e) => setForm({ ...form, visit_charge: e.target.value })}
+                        onKeyDown={(e) => handleFieldKeyDown(e)}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {(form.home_delivery || form.measurement_source === 'Shop visit' || form.address) && (
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Customer Address</label>
+                    <input
+                      placeholder="House/Flat No, Society, Area"
+                      className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                      value={form.address}
+                      onChange={(e) => setForm({ ...form, address: e.target.value })}
+                      onKeyDown={(e) => handleFieldKeyDown(e)}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Section 2: Fabric & Measurements */}
+              <div className="border border-gray-200 rounded p-3.5 md:p-4 space-y-4">
+                <div className="flex flex-wrap justify-between items-center gap-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-gray-500">2. Fabric & Measurements (Fixed Rate — No Discount)</span>
+                  {!canEditSpecs && <span className="text-xs text-amber-800 font-semibold">Locked after confirmation (Admin only)</span>}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Design / Fabric Name & Shade *</label>
+                    <input
+                      placeholder="e.g. Velvet Jacquard Beige 402"
+                      className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                      value={form.design_name}
+                      onChange={(e) => setForm({ ...form, design_name: e.target.value })}
+                      onKeyDown={(e) => handleFieldKeyDown(e)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Total Pieces (Pcs) *</label>
+                    <input
+                      type="number"
+                      disabled={!canEditSpecs}
+                      placeholder="e.g. 8"
+                      className="w-full border border-gray-300 rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
+                      value={form.total_pcs}
+                      onChange={(e) => setForm({ ...form, total_pcs: e.target.value })}
+                      onKeyDown={(e) => handleFieldKeyDown(e)}
+                    />
+                  </div>
+                </div>
+
+                {/* Seating */}
+                <div className="bg-gray-50 border border-gray-200 rounded p-3 space-y-2.5">
+                  <div className="flex justify-between items-center gap-2">
+                    <span className="text-xs font-bold text-gray-800">SEATING SEGMENTS (Always Inches)</span>
+                    <button
+                      type="button"
+                      disabled={!canEditSpecs}
+                      onClick={() => setForm((f) => ({ ...f, seating_segments: f.seating_segments ? String(f.seating_segments).replace(/\+*$/, '') + '+' : '' }))}
+                      className="text-xs font-semibold px-3 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-100 min-h-[44px] md:min-h-0"
+                    >
+                      + Add segment
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="md:col-span-2">
+                      <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Segments in Inches (e.g. 88+99+66)</label>
+                      <input
+                        name="seating_segments"
+                        disabled={!canEditSpecs}
+                        placeholder="88+99+66"
+                        className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
+                        value={form.seating_segments}
+                        onChange={(e) => setForm((f) => ({ ...f, seating_segments: e.target.value }))}
+                        onKeyDown={(e) => handleFieldKeyDown(e, true)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Rate per ft (₹)</label>
+                      <input
+                        disabled={!canEditSpecs}
+                        type="number"
+                        placeholder="200"
+                        className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
+                        value={form.seating_rate}
+                        onChange={(e) => setForm((f) => ({ ...f, seating_rate: e.target.value }))}
+                        onKeyDown={(e) => handleFieldKeyDown(e)}
+                      />
+                    </div>
+                  </div>
+                  <div className="text-xs md:text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2 tabular-nums">
+                    {calc.seatingLine}
+                  </div>
+                </div>
+
+                {/* Back */}
+                <div className="bg-gray-50 border border-gray-200 rounded p-3 space-y-2.5">
+                  <div className="flex flex-wrap justify-between items-center gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-gray-800">BACK SEGMENTS</span>
+                      <select
+                        disabled={!canEditSpecs}
+                        className="border border-gray-300 rounded px-2.5 py-1 text-xs font-semibold bg-white min-h-[44px] md:min-h-0"
+                        value={form.back_unit}
+                        onChange={(e) => setForm((f) => ({ ...f, back_unit: e.target.value }))}
+                      >
+                        <option value="Inches">Inches</option>
+                        <option value="Pcs">Pcs</option>
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!canEditSpecs}
+                      onClick={() => setForm((f) => ({ ...f, back_segments: f.back_segments ? String(f.back_segments).replace(/\+*$/, '') + '+' : '' }))}
+                      className="text-xs font-semibold px-3 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-100 min-h-[44px] md:min-h-0"
+                    >
+                      + Add segment
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="md:col-span-2">
+                      <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">
+                        {form.back_unit === 'Inches' ? 'Segments in Inches (e.g. 80+90+60)' : 'Segments in Pcs (e.g. 2+2+3+5)'}
+                      </label>
+                      <input
+                        name="back_segments"
+                        disabled={!canEditSpecs}
+                        placeholder={form.back_unit === 'Inches' ? '80+90+60' : '2+2+3+5'}
+                        className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
+                        value={form.back_segments}
+                        onChange={(e) => setForm((f) => ({ ...f, back_segments: e.target.value }))}
+                        onKeyDown={(e) => handleFieldKeyDown(e, true)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">
+                        {form.back_unit === 'Inches' ? 'Rate per ft (₹)' : 'Rate per pc (₹)'}
+                      </label>
+                      <input
+                        disabled={!canEditSpecs}
+                        type="number"
+                        placeholder="200"
+                        className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
+                        value={form.back_rate}
+                        onChange={(e) => setForm((f) => ({ ...f, back_rate: e.target.value }))}
+                        onKeyDown={(e) => handleFieldKeyDown(e)}
+                      />
+                    </div>
+                  </div>
+                  <div className="text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2 tabular-nums">
+                    {calc.backLine}
+                  </div>
+                  <div className="text-xs font-bold text-gray-900 bg-white border border-gray-300 rounded px-3 py-2 tabular-nums">
+                    {calc.summaryLine}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Cutting & Tailor Instructions (Printed on Sticker)</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Piping colour, joint placement, elastic/lace instructions..."
+                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                    value={form.tailor_notes}
+                    onChange={(e) => setForm({ ...form, tailor_notes: e.target.value })}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Right Column: Live Estimate Summary */}
+            <div className="bg-gray-50 border border-gray-300 rounded p-4 flex flex-col justify-between space-y-5">
+              <div className="space-y-3">
+                <div className="border-b border-gray-300 pb-2 flex justify-between items-center">
+                  <span className="text-xs font-bold uppercase tracking-wider text-gray-700">Estimate Summary</span>
+                  <span className="text-xs font-semibold text-gray-500">FIXED RATE</span>
+                </div>
+
+                <table className="w-full text-sm tabular-nums">
+                  <tbody className="divide-y divide-gray-200">
+                    <tr>
+                      <td className="py-2 text-gray-600">Seating ({calc.seatingFeetStr} ft × {formatINR(calc.seatingRateInt)})</td>
+                      <td className="py-2 text-right font-semibold text-gray-900">{formatINR(calc.seatingAmount)}</td>
+                    </tr>
+                    <tr>
+                      <td className="py-2 text-gray-600">Back ({calc.backBillableStr} {form.back_unit === 'Inches' ? 'ft' : 'pcs'} × {formatINR(calc.backRateInt)})</td>
+                      <td className="py-2 text-right font-semibold text-gray-900">{formatINR(calc.backAmount)}</td>
+                    </tr>
+                    {Number(form.visit_charge) > 0 && (
+                      <tr>
+                        <td className="py-2 text-gray-600">Measurement Visit Charge</td>
+                        <td className="py-2 text-right font-semibold text-gray-900">{formatINR(form.visit_charge)}</td>
+                      </tr>
+                    )}
+                    <tr className="bg-white">
+                      <td className="py-2.5 font-bold text-base text-gray-900">Net Payable Total</td>
+                      <td className="py-2.5 text-right font-bold text-lg text-gray-900">{formatINR(calc.total)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <div className="pt-2 space-y-3 border-t border-gray-300">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Advance Received (₹)</label>
+                    <input
+                      type="number"
+                      className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-base font-bold text-gray-900 tabular-nums"
+                      value={form.advance_amount}
+                      onChange={(e) => setForm({ ...form, advance_amount: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Payment Mode</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {['Cash', 'UPI', 'Card'].map((mode) => (
+                        <button
+                          type="button"
+                          key={mode}
+                          onClick={() => setForm({ ...form, payment_mode: mode })}
+                          className={`py-2.5 rounded text-xs font-semibold border min-h-[44px] ${
+                            form.payment_mode === mode
+                              ? 'bg-gray-900 text-white border-gray-900'
+                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'
+                          }`}
+                        >
+                          {mode}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="bg-white border border-gray-300 rounded p-3 flex justify-between items-center tabular-nums">
+                    <span className="text-xs font-bold uppercase text-gray-600">Balance Due on Delivery</span>
+                    <span className={`text-lg font-bold ${calc.balance > 0 ? 'text-red-700' : 'text-emerald-700'}`}>
+                      {formatINR(calc.balance)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2.5 pt-3 border-t border-gray-300">
+                {(!existingOrder || ['Measurement Pending', 'Estimate Given'].includes(existingOrder.status)) ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => finalizeSave(form.seating_segments ? 'Estimate Given' : 'Measurement Pending', 'none')}
+                      className="w-full bg-white hover:bg-gray-100 text-gray-800 border border-gray-300 py-3 rounded font-semibold text-sm min-h-[44px]"
+                    >
+                      Save as Unconfirmed Estimate
+                    </button>
+                    <button
+                      type="button"
+                      onClick={validateAndOpenReview}
+                      className="w-full bg-amber-700 hover:bg-amber-800 text-white py-3 rounded font-bold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]"
+                    >
+                      Review & Confirm Order <Icon name="ArrowRight" size={16} />
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => finalizeSave(existingOrder.status, 'none')}
+                    className="w-full bg-gray-900 hover:bg-gray-800 text-white py-3 rounded font-bold text-sm min-h-[44px]"
+                  >
+                    Save Order Changes
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Final Review & Confirm Modal */}
+          {reviewMode && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-md border border-gray-300 max-w-xl w-full p-5 md:p-6 shadow-xl space-y-4">
+                <div className="flex justify-between items-center border-b border-gray-200 pb-3">
+                  <h3 className="font-bold text-lg text-gray-900">Final Review Before Confirmation</h3>
+                  <button onClick={() => setReviewMode(false)} className="text-gray-500 hover:bg-gray-100 p-2 rounded min-w-[44px] min-h-[44px] inline-flex items-center justify-center">
+                    <Icon name="X" size={18} />
+                  </button>
+                </div>
+
+                <div className="bg-gray-50 border border-gray-200 rounded p-4 space-y-2 text-sm">
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Customer:</span><strong className="text-right">{form.customer_name} ({form.mobile})</strong></div>
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Design & Pieces:</span><strong className="text-right">{form.design_name} — {form.total_pcs} Pcs</strong></div>
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Seating:</span><strong className="text-right">{form.seating_segments} ({calc.seatingFeetStr} ft)</strong></div>
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Back:</span><strong className="text-right">{form.back_segments} ({calc.backBillableStr} {form.back_unit})</strong></div>
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Promised Delivery:</span><strong className="text-right">{formatDateDDMMYYYY(form.promised_date)}</strong></div>
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Salesman:</span><strong className="text-right">{form.salesman_name}</strong></div>
+                  <div className="border-t border-gray-300 pt-2 flex flex-wrap justify-between gap-2 text-base tabular-nums">
+                    <span>Total: <strong>{formatINR(calc.total)}</strong> | Adv ({form.payment_mode}): <strong>{formatINR(form.advance_amount)}</strong></span>
+                    <span className="text-red-700 font-bold">Bal: {formatINR(calc.balance)}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2.5 pt-2">
+                  <button
+                    onClick={() => finalizeSave('Confirmed', 'sticker_and_wa')}
+                    className="w-full bg-amber-700 hover:bg-amber-800 text-white py-3 rounded font-bold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]"
+                  >
+                    <Icon name="CheckCircle2" size={16} /> Confirm Order + Print Sticker + Open WhatsApp Receipt
+                  </button>
+                  <button
+                    onClick={() => finalizeSave('Confirmed', 'sticker_only')}
+                    className="w-full bg-gray-900 hover:bg-gray-800 text-white py-3 rounded font-semibold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]"
+                  >
+                    <Icon name="Printer" size={16} /> Confirm Order + Print Sticker Only
+                  </button>
+                  <button
+                    onClick={() => setReviewMode(false)}
+                    className="w-full bg-white hover:bg-gray-50 border border-gray-300 text-gray-700 py-2.5 rounded font-semibold text-sm min-h-[44px]"
+                  >
+                    Go Back & Edit
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // MOBILE-FIRST CUTTING & TAILOR WORK QUEUES (Large Touch Targets, 1 Task/Screen)
+    // =========================================================================
+    function ShopFloorMobileView({ db, saveDb, currentRole, scannedOrderNo }) {
+      const [selectedTailor, setSelectedTailor] = useState({});
+      const [undoState, setUndoState] = useState(null);
+
+      const queueOrders = useMemo(() => {
+        const list = db.orders.filter((o) => {
+          if (currentRole === 'cutting') return o.status === 'Cutting Pending';
+          if (currentRole === 'tailor_1' || currentRole === 'tailor_2') {
+            return o.status === 'With Tailor' && o.assigned_tailor === currentRole;
+          }
+          return false;
+        });
+        return list.sort((a, b) => (a.promised_date || '9999-12-31').localeCompare(b.promised_date || '9999-12-31'));
+      }, [db.orders, currentRole]);
+
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const startOfMonth = new Date(startOfDay.getFullYear(), startOfDay.getMonth(), 1);
+
+      const myLogs = db.pieceLogs.filter((l) => l.tailor_role === currentRole);
+      const todayPcs = myLogs.filter((l) => new Date(l.logged_at) >= startOfDay).reduce((s, l) => s + Number(l.pcs_count), 0);
+      const monthPcs = myLogs.filter((l) => new Date(l.logged_at) >= startOfMonth).reduce((s, l) => s + Number(l.pcs_count), 0);
+
+      const triggerUndoableChange = (prevDbSnapshot, nextDbSnapshot, label) => {
+        saveDb(nextDbSnapshot);
+        if (undoState?.timer) clearTimeout(undoState.timer);
+        const timer = setTimeout(() => setUndoState(null), 10000);
+        setUndoState({ prevDb: prevDbSnapshot, label, timer });
+      };
+
+      const handleUndo = () => {
+        if (!undoState) return;
+        clearTimeout(undoState.timer);
+        saveDb(undoState.prevDb);
+        setUndoState(null);
+      };
+
+      const handleCuttingComplete = (order) => {
+        const tailor = selectedTailor[order.id];
+        if (!tailor) return alert('Select Tailor 1 or Tailor 2 before confirming.');
+        const tailorLabel = tailor === 'tailor_1' ? 'Tailor 1' : 'Tailor 2';
+        if (!confirm(`Confirm cutting complete for ${order.order_no} and assign to ${tailorLabel}?`)) return;
+
+        const nowIso = new Date().toISOString();
+        const nextOrders = db.orders.map((o) =>
+          o.id === order.id ? { ...o, status: 'With Tailor', assigned_tailor: tailor, stage_changed_at: nowIso } : o
+        );
+        const nextActivity = [
+          { id: crypto.randomUUID(), order_no: order.order_no, action: `Cutting completed -> Assigned to ${tailorLabel}`, role: currentRole, created_at: nowIso },
+          ...db.activityLogs
+        ];
+        triggerUndoableChange(db, { ...db, orders: nextOrders, activityLogs: nextActivity }, `${order.order_no} assigned to ${tailorLabel}`);
+      };
+
+      const handleStitchingComplete = (order) => {
+        if (!confirm(`Confirm stitching complete for ${order.order_no} (${order.total_pcs} pcs)?`)) return;
+        const nowIso = new Date().toISOString();
+        const rate = db.settings?.tailorRates?.[currentRole] || 150;
+        const nextOrders = db.orders.map((o) =>
+          o.id === order.id ? { ...o, status: 'Silai Done', stage_changed_at: nowIso } : o
+        );
+        const nextPieceLogs = [
+          {
+            id: crypto.randomUUID(),
+            order_no: order.order_no,
+            tailor_role: currentRole,
+            pcs_count: Number(order.total_pcs) || 1,
+            rate_at_time: rate,
+            is_manual_adjustment: false,
+            logged_at: nowIso
+          },
+          ...db.pieceLogs
+        ];
+        const nextActivity = [
+          { id: crypto.randomUUID(), order_no: order.order_no, action: `Stitching completed (${order.total_pcs} pcs)`, role: currentRole, created_at: nowIso },
+          ...db.activityLogs
+        ];
+        triggerUndoableChange(db, { ...db, orders: nextOrders, pieceLogs: nextPieceLogs, activityLogs: nextActivity }, `${order.order_no} marked Silai Done`);
+      };
+
+      return (
+        <div className="max-w-xl mx-auto p-3 space-y-4">
+          {undoState && (
+            <div className="bg-gray-900 text-white px-4 py-3 rounded flex justify-between items-center shadow-md">
+              <span className="text-sm font-medium">{undoState.label}</span>
+              <button onClick={handleUndo} className="bg-amber-600 text-white px-3 py-2 rounded text-xs font-bold uppercase min-h-[44px]">
+                Undo (10s)
+              </button>
+            </div>
+          )}
+
+          {currentRole.startsWith('tailor') && (
+            <div className="bg-white border border-gray-300 rounded p-4 grid grid-cols-2 divide-x divide-gray-200 text-center tabular-nums">
+              <div>
+                <div className="text-xs font-semibold text-gray-500 uppercase">Today Stitched</div>
+                <div className="text-2xl font-bold text-gray-900 mt-0.5">{todayPcs} pcs</div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-gray-500 uppercase">This Month</div>
+                <div className="text-2xl font-bold text-amber-800 mt-0.5">{monthPcs} pcs</div>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-between items-center px-1">
+            <h2 className="font-bold text-base text-gray-900">
+              {currentRole === 'cutting' ? `To Cut (${queueOrders.length})` : `To Stitch (${queueOrders.length})`}
+            </h2>
+            <span className="text-xs text-gray-500">Sorted by delivery date</span>
+          </div>
+
+          {queueOrders.length === 0 ? (
+            <div className="bg-white border border-gray-300 rounded p-10 text-center space-y-1">
+              <div className="font-bold text-gray-800">Queue is clear</div>
+              <p className="text-xs text-gray-500">No pending orders assigned to your station right now.</p>
+            </div>
+          ) : (
+            queueOrders.map((order) => {
+              const urgency = getDueUrgency(order.promised_date, order.status);
+              const isScanned = scannedOrderNo === order.order_no;
+              return (
+                <div
+                  key={order.id}
+                  className={`bg-white rounded border-2 p-4 space-y-3 ${
+                    isScanned ? 'border-amber-600' : urgency?.level === 'overdue' ? 'border-red-400' : 'border-gray-300'
+                  }`}
+                >
+                  <div className="flex justify-between items-start border-b border-gray-200 pb-2.5">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-lg text-gray-900">{order.order_no}</span>
+                        {urgency && (
+                          <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                            urgency.level === 'overdue' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-900'
+                          }`}>
+                            {urgency.label}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-base font-semibold text-gray-800 mt-0.5">{order.design_name}</div>
+                    </div>
+                    <div className="text-right tabular-nums">
+                      <div className="text-xs font-semibold text-gray-500">DELIVERY</div>
+                      <div className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(order.promised_date)}</div>
+                      <div className="text-xs font-bold text-amber-800 mt-0.5">{order.total_pcs} PCS</div>
+                    </div>
+                  </div>
+
+                  <div className="bg-gray-50 border border-gray-200 rounded p-3 space-y-1.5 text-sm tabular-nums">
+                    <div><span className="text-gray-500 font-semibold">Seating:</span> <strong>{order.seating_segments}</strong> ({order.seating_feet} ft)</div>
+                    <div><span className="text-gray-500 font-semibold">Back:</span> <strong>{order.back_segments}</strong> ({order.back_billable_qty} {order.back_unit})</div>
+                    {order.tailor_notes && (
+                      <div className="pt-1.5 border-t border-gray-200 text-gray-900 font-medium">
+                        <span className="text-red-700 font-bold">Note:</span> {order.tailor_notes}
+                      </div>
+                    )}
+                  </div>
+
+                  {currentRole === 'cutting' && (
+                    <div className="space-y-2.5 pt-1">
+                      <div className="grid grid-cols-2 gap-2">
+                        {['tailor_1', 'tailor_2'].map((tKey) => (
+                          <button
+                            key={tKey}
+                            type="button"
+                            onClick={() => setSelectedTailor({ ...selectedTailor, [order.id]: tKey })}
+                            className={`py-3.5 rounded border-2 font-bold text-base min-h-[48px] ${
+                              selectedTailor[order.id] === tKey
+                                ? 'bg-gray-900 text-white border-gray-900'
+                                : 'bg-white text-gray-800 border-gray-300'
+                            }`}
+                          >
+                            {tKey === 'tailor_1' ? 'Tailor 1' : 'Tailor 2'}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleCuttingComplete(order)}
+                        className="w-full bg-amber-700 active:bg-amber-800 text-white py-4 rounded font-bold text-base min-h-[48px]"
+                      >
+                        Confirm Cutting Done
+                      </button>
+                    </div>
+                  )}
+
+                  {currentRole.startsWith('tailor') && (
+                    <button
+                      type="button"
+                      onClick={() => handleStitchingComplete(order)}
+                      className="w-full bg-emerald-700 active:bg-emerald-800 text-white py-4 rounded font-bold text-base min-h-[48px]"
+                    >
+                      Mark Stitching Done ({order.total_pcs} Pcs)
+                    </button>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ADMIN REPORTS MODULE
+    // - Desktop (>= 768px): Tabbed report view with inline filters
+    // - Mobile (< 768px): Collapsible "Filters" button + Single-column stacked sections in exact priority order:
+    //   1. Today's summary (2 stat tiles per row)
+    //   2. Pending orders (with stage visual bars + scrollable table)
+    //   3. Late orders
+    //   4. Ready/Delivery pending
+    //   5. Balance due
+    //   6. Measurement visits, Tailor report, Salesman report, Unconfirmed follow-up
+    // =========================================================================
+    function AdminReportsView({ db, onDownloadExcel }) {
+      const todayIso = new Date().toISOString().split('T')[0];
+      const thirtyDaysAgoIso = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
+
+      const [reportType, setReportType] = useState('day_end');
+      const [fromDate, setFromDate] = useState(thirtyDaysAgoIso);
+      const [toDate, setToDate] = useState(todayIso);
+      const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+
+      const inRange = (isoStr) => {
+        if (!isoStr) return false;
+        const d = isoStr.split('T')[0];
+        return d >= fromDate && d <= toDate;
+      };
+
+      const rangeOrders = db.orders.filter((o) => inRange(o.created_at));
+      const confirmedRange = rangeOrders.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status));
+
+      // Today's summary metrics
+      const todayOrders = db.orders.filter((o) => o.created_at?.startsWith(todayIso));
+      const todayConfirmed = todayOrders.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status));
+      const cashAdv = todayConfirmed.filter((o) => o.payment_mode === 'Cash').reduce((s, o) => s + Number(o.advance_amount), 0);
+      const upiAdv = todayConfirmed.filter((o) => o.payment_mode === 'UPI').reduce((s, o) => s + Number(o.advance_amount), 0);
+      const cardAdv = todayConfirmed.filter((o) => o.payment_mode === 'Card').reduce((s, o) => s + Number(o.advance_amount), 0);
+      const totalTodayBalance = todayConfirmed.reduce((s, o) => s + Number(o.balance_amount), 0);
+
+      const lateOrdersList = db.orders.filter(
+        (o) => o.status !== 'Delivered' && getDueUrgency(o.promised_date, o.status)?.level === 'overdue'
+      );
+      const readyDeliveryList = db.orders.filter((o) => o.status === 'Ready');
+      const balanceDueList = db.orders.filter(
+        (o) => !['Measurement Pending', 'Estimate Given'].includes(o.status) && Number(o.balance_amount) > 0
+      );
+
+      const shareDailySummaryWhatsApp = () => {
+        const text =
+          `*Shree Gayatri Handloom House — Sofa Cover Dept*\n` +
+          `Daily Closing (${formatDateDDMMYYYY(todayIso)})\n\n` +
+          `• Orders Created: ${todayOrders.length}\n` +
+          `• Confirmed: ${todayConfirmed.length}\n` +
+          `• Ready: ${readyDeliveryList.length}\n` +
+          `• Delivered Today: ${db.orders.filter((o) => o.status === 'Delivered' && o.stage_changed_at?.startsWith(todayIso)).length}\n\n` +
+          `*Advance Collected Today:*\n` +
+          `Cash: ${formatINR(cashAdv)} | UPI: ${formatINR(upiAdv)} | Card: ${formatINR(cardAdv)}\n` +
+          `Total Advance: *${formatINR(cashAdv + upiAdv + cardAdv)}*\n` +
+          `Total Pending Customer Dues: *${formatINR(balanceDueList.reduce((s, o) => s + Number(o.balance_amount), 0))}*`;
+        window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+      };
+
+      const REPORT_TABS = [
+        { id: 'day_end', label: '1. Day-End Closing' },
+        { id: 'aging', label: '2. Stage Aging & Bottlenecks' },
+        { id: 'late_delivery', label: '3. Late & Delivery Pending' },
+        { id: 'visits', label: '4. Measurement Visits' },
+        { id: 'tailors', label: '5. Tailor Piece & Earnings' },
+        { id: 'salesmen', label: '6. Salesman Conversion' },
+        { id: 'unconfirmed', label: '7. Unconfirmed Follow-Up' },
+        { id: 'dues', label: '8. Customer Dues' }
+      ];
+
+      const pendingStages = ['Measurement Pending', 'Estimate Given', 'Cutting Pending', 'With Tailor', 'Silai Done', 'Ready'];
+      const maxStageCount = Math.max(1, ...pendingStages.map((st) => db.orders.filter((o) => o.status === st).length));
+
+      return (
+        <div className="space-y-4">
+          {/* Mobile Collapsible "Filters" Button Bar (< 768px) */}
+          <div className="md:hidden bg-white border border-gray-300 rounded p-3 space-y-3 no-print">
+            <div className="flex justify-between items-center gap-2">
+              <div className="text-sm font-bold text-gray-900">
+                Reports ({formatDateDDMMYYYY(fromDate)} – {formatDateDDMMYYYY(toDate)})
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileFiltersOpen((v) => !v)}
+                className="px-3.5 py-2 bg-gray-900 text-white rounded text-sm font-semibold inline-flex items-center gap-2 min-h-[44px]"
+              >
+                <Icon name="SlidersHorizontal" size={16} />
+                <span>Filters</span>
+              </button>
+            </div>
+
+            {mobileFiltersOpen && (
+              <div className="pt-3 border-t border-gray-200 space-y-3">
+                <div className="grid grid-cols-1 gap-2.5">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1 mobile-label">From Date</label>
+                    <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="w-full border border-gray-300 rounded px-3 py-2 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1 mobile-label">To Date</label>
+                    <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="w-full border border-gray-300 rounded px-3 py-2 text-sm" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  <button onClick={shareDailySummaryWhatsApp} className="w-full py-2.5 bg-emerald-700 text-white rounded text-sm font-semibold inline-flex items-center justify-center gap-2 min-h-[44px]">
+                    <Icon name="Share2" size={16} /> Share Daily Summary (WhatsApp)
+                  </button>
+                  <button onClick={onDownloadExcel} className="w-full py-2.5 bg-gray-900 text-white rounded text-sm font-semibold inline-flex items-center justify-center gap-2 min-h-[44px]">
+                    <Icon name="Download" size={16} /> Export Excel (.xlsx)
+                  </button>
+                  <button onClick={() => window.print()} className="w-full py-2.5 bg-white border border-gray-300 text-gray-800 rounded text-sm font-semibold inline-flex items-center justify-center gap-2 min-h-[44px]">
+                    <Icon name="Printer" size={16} /> Print / PDF
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Desktop Filter & Export Header (>= 768px) */}
+          <div className="hidden md:flex bg-white border border-gray-300 rounded p-4 flex-wrap justify-between items-center gap-3 no-print">
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="text-xs font-bold text-gray-600">From:</label>
+              <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="border border-gray-300 rounded px-2.5 py-1.5 text-xs font-medium" />
+              <label className="text-xs font-bold text-gray-600">To:</label>
+              <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="border border-gray-300 rounded px-2.5 py-1.5 text-xs font-medium" />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={shareDailySummaryWhatsApp} className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-xs font-semibold inline-flex items-center gap-1.5">
+                <Icon name="Share2" size={14} /> Share Daily Summary (WA)
+              </button>
+              <button onClick={() => window.print()} className="px-3 py-1.5 bg-white hover:bg-gray-50 border border-gray-300 text-gray-800 rounded text-xs font-semibold inline-flex items-center gap-1.5">
+                <Icon name="Printer" size={14} /> Print / PDF
+              </button>
+              <button onClick={onDownloadExcel} className="px-3 py-1.5 bg-gray-900 hover:bg-gray-800 text-white rounded text-xs font-semibold inline-flex items-center gap-1.5">
+                <Icon name="Download" size={14} /> Export Excel (.xlsx)
+              </button>
+            </div>
+          </div>
+
+          {/* Desktop Report Selector Bar (>= 768px) */}
+          <div className="hidden md:flex flex-wrap gap-1.5 no-print">
+            {REPORT_TABS.map((rt) => (
+              <button
+                key={rt.id}
+                onClick={() => setReportType(rt.id)}
+                className={`px-3 py-2 rounded text-xs font-semibold border ${
+                  reportType === rt.id
+                    ? 'bg-amber-700 text-white border-amber-700'
+                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                {rt.label}
+              </button>
+            ))}
+          </div>
+
+          {/* =============================================================== */}
+          {/* MOBILE SINGLE-COLUMN ORDERED REPORTS (< 768px)                  */}
+          {/* Order: 1. Today's summary -> 2. Pending orders -> 3. Late       */}
+          {/* -> 4. Ready/Delivery pending -> 5. Balance due -> Rest          */}
+          {/* =============================================================== */}
+          <div className="md:hidden space-y-4">
+            {/* 1. Today's Summary (Stat tiles 2 per row) */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <h3 className="font-bold text-base text-gray-900 border-b border-gray-200 pb-2">1. Today's Summary</h3>
+              <div className="grid grid-cols-2 gap-3 tabular-nums">
+                <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                  <div className="text-xs text-gray-600 font-semibold">Orders Today</div>
+                  <div className="text-lg font-bold text-gray-900 mt-1">{todayOrders.length} ({todayConfirmed.length} Conf.)</div>
+                </div>
+                <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                  <div className="text-xs text-gray-600 font-semibold">Ready / Delivered</div>
+                  <div className="text-lg font-bold text-gray-900 mt-1">{readyDeliveryList.length} / {db.orders.filter((o) => o.status === 'Delivered').length}</div>
+                </div>
+                <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                  <div className="text-xs text-gray-600 font-semibold">Advance Today</div>
+                  <div className="text-lg font-bold text-emerald-700 mt-1">{formatINR(cashAdv + upiAdv + cardAdv)}</div>
+                </div>
+                <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                  <div className="text-xs text-gray-600 font-semibold">Today Balance</div>
+                  <div className="text-lg font-bold text-red-700 mt-1">{formatINR(totalTodayBalance)}</div>
+                </div>
+              </div>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[420px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Mode</th>
+                      <th className="p-2.5 text-right border-b">Orders</th>
+                      <th className="p-2.5 text-right border-b">Today Adv.</th>
+                      <th className="p-2.5 text-right border-b">Period Adv.</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {['Cash', 'UPI', 'Card'].map((mode) => (
+                      <tr key={mode}>
+                        <td className="p-2.5 font-semibold">{mode}</td>
+                        <td className="p-2.5 text-right">{todayConfirmed.filter((o) => o.payment_mode === mode).length}</td>
+                        <td className="p-2.5 text-right font-bold">{formatINR(todayConfirmed.filter((o) => o.payment_mode === mode).reduce((s, o) => s + Number(o.advance_amount), 0))}</td>
+                        <td className="p-2.5 text-right">{formatINR(confirmedRange.filter((o) => o.payment_mode === mode).reduce((s, o) => s + Number(o.advance_amount), 0))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 2. Pending Orders by Stage (Full-width chart bars + scrollable table) */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <h3 className="font-bold text-base text-gray-900 border-b border-gray-200 pb-2">2. Pending Orders & Stage Aging</h3>
+              {/* Full-width stage distribution chart */}
+              <div className="space-y-2 w-full">
+                {pendingStages.map((st) => {
+                  const count = db.orders.filter((o) => o.status === st).length;
+                  const pct = Math.round((count / maxStageCount) * 100);
+                  return (
+                    <div key={st} className="w-full space-y-1">
+                      <div className="flex justify-between text-xs font-semibold text-gray-700">
+                        <span>{st}</span>
+                        <span className="tabular-nums">{count}</span>
+                      </div>
+                      <div className="w-full bg-gray-100 h-2.5 rounded overflow-hidden">
+                        <div className="bg-amber-700 h-full rounded" style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[460px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Stage</th>
+                      <th className="p-2.5 text-right border-b">Pending</th>
+                      <th className="p-2.5 text-right border-b">Avg Age</th>
+                      <th className="p-2.5 text-right border-b">Stuck</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {pendingStages.map((st) => {
+                      const list = db.orders.filter((o) => o.status === st);
+                      const avgDays = list.length ? (list.reduce((s, o) => s + getHoursInStage(o) / 24, 0) / list.length).toFixed(1) : '0.0';
+                      const limit = db.settings?.stageAlertHours?.[st] || 48;
+                      const stuck = list.filter((o) => getHoursInStage(o) > limit).length;
+                      return (
+                        <tr key={st}>
+                          <td className="p-2.5"><StatusChip status={st} /></td>
+                          <td className="p-2.5 text-right font-bold">{list.length}</td>
+                          <td className="p-2.5 text-right">{avgDays}d</td>
+                          <td className="p-2.5 text-right font-bold text-red-700">{stuck}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 3. Late Orders */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <div className="flex justify-between items-center border-b border-gray-200 pb-2">
+                <h3 className="font-bold text-base text-gray-900">3. Late Orders</h3>
+                <span className="px-2 py-0.5 bg-red-100 text-red-800 rounded text-xs font-bold tabular-nums">{lateOrdersList.length}</span>
+              </div>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[500px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Order</th>
+                      <th className="p-2.5 text-left border-b">Customer</th>
+                      <th className="p-2.5 text-left border-b">Stage</th>
+                      <th className="p-2.5 text-left border-b">Due Date</th>
+                      <th className="p-2.5 text-right border-b">Balance</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {lateOrdersList.length === 0 ? (
+                      <tr><td colSpan={5} className="p-4 text-center text-gray-500">No overdue orders.</td></tr>
+                    ) : (
+                      lateOrdersList.map((o) => (
+                        <tr key={o.id}>
+                          <td className="p-2.5 font-bold">{o.order_no}</td>
+                          <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
+                          <td className="p-2.5"><StatusChip status={o.status} /></td>
+                          <td className="p-2.5 text-red-700 font-bold">{formatDateDDMMYYYY(o.promised_date)}</td>
+                          <td className="p-2.5 text-right font-bold">{formatINR(o.balance_amount)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 4. Ready / Delivery Pending */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <div className="flex justify-between items-center border-b border-gray-200 pb-2">
+                <h3 className="font-bold text-base text-gray-900">4. Ready / Delivery Pending</h3>
+                <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded text-xs font-bold tabular-nums">{readyDeliveryList.length}</span>
+              </div>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[480px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Order</th>
+                      <th className="p-2.5 text-left border-b">Customer</th>
+                      <th className="p-2.5 text-left border-b">Design</th>
+                      <th className="p-2.5 text-right border-b">Balance Due</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {readyDeliveryList.length === 0 ? (
+                      <tr><td colSpan={4} className="p-4 text-center text-gray-500">No orders waiting in Ready state.</td></tr>
+                    ) : (
+                      readyDeliveryList.map((o) => (
+                        <tr key={o.id}>
+                          <td className="p-2.5 font-bold">{o.order_no}</td>
+                          <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
+                          <td className="p-2.5">{o.design_name}</td>
+                          <td className="p-2.5 text-right font-bold text-red-700">{formatINR(o.balance_amount)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 5. Balance Due (Customer Dues) */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <div className="flex justify-between items-center border-b border-gray-200 pb-2">
+                <h3 className="font-bold text-base text-gray-900">5. Balance Due (Customer Dues)</h3>
+                <span className="text-sm font-bold text-red-700 tabular-nums">
+                  {formatINR(balanceDueList.reduce((s, o) => s + Number(o.balance_amount), 0))}
+                </span>
+              </div>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[500px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Order</th>
+                      <th className="p-2.5 text-left border-b">Customer</th>
+                      <th className="p-2.5 text-left border-b">Status</th>
+                      <th className="p-2.5 text-right border-b">Total</th>
+                      <th className="p-2.5 text-right border-b">Balance</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {balanceDueList.map((o) => (
+                      <tr key={o.id}>
+                        <td className="p-2.5 font-bold">{o.order_no}</td>
+                        <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
+                        <td className="p-2.5"><StatusChip status={o.status} /></td>
+                        <td className="p-2.5 text-right">{formatINR(o.estimate_total)}</td>
+                        <td className="p-2.5 text-right font-bold text-red-700">{formatINR(o.balance_amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 6. Tailor Report */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <h3 className="font-bold text-base text-gray-900 border-b border-gray-200 pb-2">6. Tailor Piece & Earnings</h3>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[440px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Tailor</th>
+                      <th className="p-2.5 text-right border-b">Today</th>
+                      <th className="p-2.5 text-right border-b">Period Pcs</th>
+                      <th className="p-2.5 text-right border-b">Rate</th>
+                      <th className="p-2.5 text-right border-b">Earning</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {['tailor_1', 'tailor_2'].map((tRole) => {
+                      const logs = db.pieceLogs.filter((l) => l.tailor_role === tRole && inRange(l.logged_at));
+                      const todayPcs = db.pieceLogs.filter((l) => l.tailor_role === tRole && l.logged_at?.startsWith(todayIso)).reduce((s, l) => s + Number(l.pcs_count), 0);
+                      const periodPcs = logs.reduce((s, l) => s + Number(l.pcs_count), 0);
+                      const earning = logs.reduce((s, l) => s + Number(l.pcs_count) * Number(l.rate_at_time || 150), 0);
+                      return (
+                        <tr key={tRole}>
+                          <td className="p-2.5 font-bold">{tRole === 'tailor_1' ? 'Tailor 1' : 'Tailor 2'}</td>
+                          <td className="p-2.5 text-right">{todayPcs}</td>
+                          <td className="p-2.5 text-right font-bold">{periodPcs}</td>
+                          <td className="p-2.5 text-right">{formatINR(db.settings?.tailorRates?.[tRole] || 150)}</td>
+                          <td className="p-2.5 text-right font-bold text-emerald-700">{formatINR(earning)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 7. Salesman Conversion Report */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <h3 className="font-bold text-base text-gray-900 border-b border-gray-200 pb-2">7. Salesman Conversion</h3>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[460px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Salesman</th>
+                      <th className="p-2.5 text-right border-b">Enquiries</th>
+                      <th className="p-2.5 text-right border-b">Confirmed</th>
+                      <th className="p-2.5 text-right border-b">Conv %</th>
+                      <th className="p-2.5 text-right border-b">Sales Value</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {db.salesmen.map((sm) => {
+                      const smAll = rangeOrders.filter((o) => o.salesman_name === sm);
+                      const smConf = smAll.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status));
+                      const conv = smAll.length ? Math.round((smConf.length / smAll.length) * 100) : 0;
+                      const val = smConf.reduce((s, o) => s + Number(o.estimate_total), 0);
+                      return (
+                        <tr key={sm}>
+                          <td className="p-2.5 font-bold">{sm}</td>
+                          <td className="p-2.5 text-right">{smAll.length}</td>
+                          <td className="p-2.5 text-right font-semibold">{smConf.length}</td>
+                          <td className="p-2.5 text-right font-bold text-amber-800">{conv}%</td>
+                          <td className="p-2.5 text-right font-bold text-emerald-700">{formatINR(val)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 8. Measurement Visits & Unconfirmed Follow-Up */}
+            <section className="bg-white border border-gray-300 rounded p-4 space-y-3">
+              <h3 className="font-bold text-base text-gray-900 border-b border-gray-200 pb-2">8. Unconfirmed Estimates Follow-Up</h3>
+              <div className="overflow-x-auto border border-gray-200 rounded">
+                <table className="w-full min-w-[480px] text-sm tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Order</th>
+                      <th className="p-2.5 text-left border-b">Customer</th>
+                      <th className="p-2.5 text-right border-b">Estimate</th>
+                      <th className="p-2.5 text-right border-b">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {db.orders.filter((o) => ['Measurement Pending', 'Estimate Given'].includes(o.status)).map((o) => (
+                      <tr key={o.id}>
+                        <td className="p-2.5 font-bold">{o.order_no}</td>
+                        <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
+                        <td className="p-2.5 text-right font-bold">{formatINR(o.estimate_total)}</td>
+                        <td className="p-2.5 text-right">
+                          <a href={WhatsAppService.getLink('followup', o)} target="_blank" rel="noreferrer" className="inline-flex items-center px-3 py-1.5 bg-emerald-700 text-white rounded text-xs font-semibold min-h-[36px]">
+                            Follow-Up WA
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          {/* =============================================================== */}
+          {/* DESKTOP TABBED REPORT VIEW (>= 768px — kept identical)          */}
+          {/* =============================================================== */}
+          <div id="printable-area" className="hidden md:block bg-white border border-gray-300 rounded p-5 space-y-5">
+            <div className="border-b border-gray-200 pb-3 flex justify-between items-center">
+              <div>
+                <h3 className="font-bold text-base text-gray-900">
+                  {REPORT_TABS.find((r) => r.id === reportType)?.label}
+                </h3>
+                <p className="text-xs text-gray-500">
+                  Shree Gayatri Handloom House — Sofa Cover Dept • Period: {formatDateDDMMYYYY(fromDate)} to {formatDateDDMMYYYY(toDate)}
+                </p>
+              </div>
+            </div>
+
+            {reportType === 'day_end' && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 tabular-nums">
+                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                    <div className="text-xs text-gray-500 font-semibold">Orders Created Today</div>
+                    <div className="text-xl font-bold text-gray-900 mt-1">{todayOrders.length} ({todayConfirmed.length} Confirmed)</div>
+                  </div>
+                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                    <div className="text-xs text-gray-500 font-semibold">Ready / Delivered</div>
+                    <div className="text-xl font-bold text-gray-900 mt-1">
+                      {db.orders.filter((o) => o.status === 'Ready').length} Ready / {db.orders.filter((o) => o.status === 'Delivered').length} Del.
+                    </div>
+                  </div>
+                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                    <div className="text-xs text-gray-500 font-semibold">Today Advance Collected</div>
+                    <div className="text-xl font-bold text-emerald-700 mt-1">{formatINR(cashAdv + upiAdv + cardAdv)}</div>
+                  </div>
+                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                    <div className="text-xs text-gray-500 font-semibold">Today Balance Receivable</div>
+                    <div className="text-xl font-bold text-red-700 mt-1">{formatINR(totalTodayBalance)}</div>
+                  </div>
+                </div>
+
+                <table className="w-full text-sm border border-gray-200 tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Payment Mode</th>
+                      <th className="p-2.5 text-right border-b">Orders Count</th>
+                      <th className="p-2.5 text-right border-b">Today Advance</th>
+                      <th className="p-2.5 text-right border-b">Selected Period Advance</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {['Cash', 'UPI', 'Card'].map((mode) => (
+                      <tr key={mode}>
+                        <td className="p-2.5 font-semibold">{mode}</td>
+                        <td className="p-2.5 text-right">{todayConfirmed.filter((o) => o.payment_mode === mode).length}</td>
+                        <td className="p-2.5 text-right font-bold">{formatINR(todayConfirmed.filter((o) => o.payment_mode === mode).reduce((s, o) => s + Number(o.advance_amount), 0))}</td>
+                        <td className="p-2.5 text-right">{formatINR(confirmedRange.filter((o) => o.payment_mode === mode).reduce((s, o) => s + Number(o.advance_amount), 0))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {reportType === 'aging' && (
+              <div className="space-y-4">
+                <table className="w-full text-sm border border-gray-200 tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Stage</th>
+                      <th className="p-2.5 text-right border-b">Pending Orders</th>
+                      <th className="p-2.5 text-right border-b">Avg Aging (Days)</th>
+                      <th className="p-2.5 text-right border-b">Stuck Beyond Threshold</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {pendingStages.map((st) => {
+                      const list = db.orders.filter((o) => o.status === st);
+                      const avgDays = list.length ? (list.reduce((s, o) => s + getHoursInStage(o) / 24, 0) / list.length).toFixed(1) : '0.0';
+                      const limit = db.settings?.stageAlertHours?.[st] || 48;
+                      const stuck = list.filter((o) => getHoursInStage(o) > limit).length;
+                      return (
+                        <tr key={st}>
+                          <td className="p-2.5 font-semibold"><StatusChip status={st} /></td>
+                          <td className="p-2.5 text-right font-bold">{list.length}</td>
+                          <td className="p-2.5 text-right">{avgDays} days</td>
+                          <td className="p-2.5 text-right font-bold text-red-700">{stuck}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {reportType === 'late_delivery' && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border border-gray-200 tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Order No</th>
+                      <th className="p-2.5 text-left border-b">Customer</th>
+                      <th className="p-2.5 text-left border-b">Stage</th>
+                      <th className="p-2.5 text-left border-b">Promised Date</th>
+                      <th className="p-2.5 text-left border-b">Urgency</th>
+                      <th className="p-2.5 text-right border-b">Balance Due</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {db.orders
+                      .filter((o) => o.status !== 'Delivered' && (o.status === 'Ready' || getDueUrgency(o.promised_date, o.status)))
+                      .map((o) => {
+                        const urg = getDueUrgency(o.promised_date, o.status);
+                        return (
+                          <tr key={o.id}>
+                            <td className="p-2.5 font-bold">{o.order_no}</td>
+                            <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
+                            <td className="p-2.5"><StatusChip status={o.status} /></td>
+                            <td className="p-2.5">{formatDateDDMMYYYY(o.promised_date)}</td>
+                            <td className="p-2.5 font-bold text-red-700">{urg ? urg.label : 'Ready for Pickup'}</td>
+                            <td className="p-2.5 text-right font-bold">{formatINR(o.balance_amount)}</td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {reportType === 'visits' && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border border-gray-200 tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Order No</th>
+                      <th className="p-2.5 text-left border-b">Date</th>
+                      <th className="p-2.5 text-left border-b">Customer & Address</th>
+                      <th className="p-2.5 text-left border-b">Staff Visited</th>
+                      <th className="p-2.5 text-right border-b">Visit Charge</th>
+                      <th className="p-2.5 text-right border-b">Order Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {rangeOrders.filter((o) => o.measurement_source === 'Shop visit').map((o) => (
+                      <tr key={o.id}>
+                        <td className="p-2.5 font-bold">{o.order_no}</td>
+                        <td className="p-2.5">{formatDateDDMMYYYY(o.created_at)}</td>
+                        <td className="p-2.5">{o.customer_name} — {o.address || 'No address'}</td>
+                        <td className="p-2.5 font-semibold">{o.visit_staff_name || '—'}</td>
+                        <td className="p-2.5 text-right font-bold">{formatINR(o.visit_charge)}</td>
+                        <td className="p-2.5 text-right">{formatINR(o.estimate_total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {reportType === 'tailors' && (
+              <div className="space-y-4">
+                <table className="w-full text-sm border border-gray-200 tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Tailor</th>
+                      <th className="p-2.5 text-right border-b">Today Pcs</th>
+                      <th className="p-2.5 text-right border-b">Period Pcs</th>
+                      <th className="p-2.5 text-right border-b">Current Rate / Pc</th>
+                      <th className="p-2.5 text-right border-b">Period Earning</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {['tailor_1', 'tailor_2'].map((tRole) => {
+                      const logs = db.pieceLogs.filter((l) => l.tailor_role === tRole && inRange(l.logged_at));
+                      const todayPcs = db.pieceLogs.filter((l) => l.tailor_role === tRole && l.logged_at?.startsWith(todayIso)).reduce((s, l) => s + Number(l.pcs_count), 0);
+                      const periodPcs = logs.reduce((s, l) => s + Number(l.pcs_count), 0);
+                      const earning = logs.reduce((s, l) => s + Number(l.pcs_count) * Number(l.rate_at_time || 150), 0);
+                      return (
+                        <tr key={tRole}>
+                          <td className="p-2.5 font-bold">{tRole === 'tailor_1' ? 'Tailor 1' : 'Tailor 2'}</td>
+                          <td className="p-2.5 text-right">{todayPcs}</td>
+                          <td className="p-2.5 text-right font-bold">{periodPcs}</td>
+                          <td className="p-2.5 text-right">{formatINR(db.settings?.tailorRates?.[tRole] || 150)}</td>
+                          <td className="p-2.5 text-right font-bold text-emerald-700">{formatINR(earning)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {reportType === 'salesmen' && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border border-gray-200 tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Salesman</th>
+                      <th className="p-2.5 text-right border-b">Total Enquiries</th>
+                      <th className="p-2.5 text-right border-b">Confirmed Orders</th>
+                      <th className="p-2.5 text-right border-b">Conversion %</th>
+                      <th className="p-2.5 text-right border-b">Confirmed Sales Value</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {db.salesmen.map((sm) => {
+                      const smAll = rangeOrders.filter((o) => o.salesman_name === sm);
+                      const smConf = smAll.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status));
+                      const conv = smAll.length ? Math.round((smConf.length / smAll.length) * 100) : 0;
+                      const val = smConf.reduce((s, o) => s + Number(o.estimate_total), 0);
+                      return (
+                        <tr key={sm}>
+                          <td className="p-2.5 font-bold">{sm}</td>
+                          <td className="p-2.5 text-right">{smAll.length}</td>
+                          <td className="p-2.5 text-right font-semibold">{smConf.length}</td>
+                          <td className="p-2.5 text-right font-bold text-amber-800">{conv}%</td>
+                          <td className="p-2.5 text-right font-bold text-emerald-700">{formatINR(val)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {reportType === 'unconfirmed' && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border border-gray-200 tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Order No</th>
+                      <th className="p-2.5 text-left border-b">Date</th>
+                      <th className="p-2.5 text-left border-b">Customer</th>
+                      <th className="p-2.5 text-left border-b">Design</th>
+                      <th className="p-2.5 text-right border-b">Estimate</th>
+                      <th className="p-2.5 text-right border-b no-print">Follow-Up</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {db.orders.filter((o) => ['Measurement Pending', 'Estimate Given'].includes(o.status)).map((o) => (
+                      <tr key={o.id}>
+                        <td className="p-2.5 font-bold">{o.order_no}</td>
+                        <td className="p-2.5">{formatDateDDMMYYYY(o.created_at)}</td>
+                        <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
+                        <td className="p-2.5">{o.design_name}</td>
+                        <td className="p-2.5 text-right font-bold">{formatINR(o.estimate_total)}</td>
+                        <td className="p-2.5 text-right no-print">
+                          <a href={WhatsAppService.getLink('followup', o)} target="_blank" rel="noreferrer" className="px-2.5 py-1 bg-emerald-700 text-white rounded text-xs font-semibold">
+                            WhatsApp Follow-Up
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {reportType === 'dues' && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border border-gray-200 tabular-nums">
+                  <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                    <tr>
+                      <th className="p-2.5 text-left border-b">Order No</th>
+                      <th className="p-2.5 text-left border-b">Customer</th>
+                      <th className="p-2.5 text-left border-b">Status</th>
+                      <th className="p-2.5 text-right border-b">Total Bill</th>
+                      <th className="p-2.5 text-right border-b">Advance</th>
+                      <th className="p-2.5 text-right border-b">Balance Due</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {balanceDueList.map((o) => (
+                      <tr key={o.id}>
+                        <td className="p-2.5 font-bold">{o.order_no}</td>
+                        <td className="p-2.5">{o.customer_name} ({o.mobile})</td>
+                        <td className="p-2.5"><StatusChip status={o.status} /></td>
+                        <td className="p-2.5 text-right">{formatINR(o.estimate_total)}</td>
+                        <td className="p-2.5 text-right">{formatINR(o.advance_amount)}</td>
+                        <td className="p-2.5 text-right font-bold text-red-700">{formatINR(o.balance_amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // DESKTOP & RESPONSIVE MOBILE ERP SHELL
+    // - Above 768px: exact left sidebar + dense table
+    // - Below 768px: slide-in drawer from hamburger, compact header (logo + short title + search icon),
+    //   Install App & Logout inside drawer, and card-based orders list
+    // =========================================================================
+    function DesktopERPView({ db, saveDb, currentRole, savedKey, onLogout, triggerInstall, syncStatus }) {
+      const isAdmin = currentRole === 'admin';
+      const [activeNav, setActiveNav] = useState('orders'); // orders | new_order | reports | settings
+      const [queueFilter, setQueueFilter] = useState('ALL'); // ALL | READY_DELIVERY | BALANCE_DUE | STUCK | UNCONFIRMED
+      const [searchQuery, setSearchQuery] = useState('');
+      const [selectedIds, setSelectedIds] = useState([]);
+      const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+
+      const [editingOrder, setEditingOrder] = useState(null);
+      const [stickerBatch, setStickerBatch] = useState(null);
+      const [timelineOrder, setTimelineOrder] = useState(null);
+      const [undoState, setUndoState] = useState(null);
+
+      // Ctrl+K Global Search Modal
+      const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+      const [globalSearchTerm, setGlobalSearchTerm] = useState('');
+
+      // Admin Settings State
+      const [newSalesman, setNewSalesman] = useState('');
+      const [pinEdits, setPinEdits] = useState(db.settings.pins);
+      const [rateEdits, setRateEdits] = useState(db.settings.tailorRates);
+      const [dimEdits, setDimEdits] = useState({ w: db.settings.sticker_width_mm || 60, h: db.settings.sticker_height_mm || 40 });
+      const [alertEdits, setAlertEdits] = useState(db.settings.stageAlertHours || { 'Cutting Pending': 24, 'With Tailor': 48, 'Silai Done': 12, 'Ready': 72 });
+
+      useEffect(() => {
+        const onKeyDown = (e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+            e.preventDefault();
+            setGlobalSearchOpen((prev) => !prev);
+            setGlobalSearchTerm('');
+          } else if (e.key === 'Escape') {
+            setGlobalSearchOpen(false);
+            setMobileDrawerOpen(false);
+          }
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+      }, []);
+
+      const selectPage = (nav, filter = null) => {
+        setActiveNav(nav);
+        if (filter !== null) setQueueFilter(filter);
+        setMobileDrawerOpen(false);
+      };
+
+      const triggerUndoableChange = (prevDb, nextDb, label) => {
+        saveDb(nextDb);
+        if (undoState?.timer) clearTimeout(undoState.timer);
+        const timer = setTimeout(() => setUndoState(null), 10000);
+        setUndoState({ prevDb, label, timer });
+      };
+
+      const handleUndo = () => {
+        if (!undoState) return;
+        clearTimeout(undoState.timer);
+        saveDb(undoState.prevDb);
+        setUndoState(null);
+      };
+
+      const handleCommitOrder = (payload, wasConfirmed, afterAction) => {
+        const nowIso = new Date().toISOString();
+        let savedOrder;
+        let nextOrders;
+        let nextSeq = db.nextOrderSeq || 1;
+
+        if (editingOrder) {
+          savedOrder = { ...editingOrder, ...payload, stage_changed_at: nowIso };
+          nextOrders = db.orders.map((o) => (o.id === editingOrder.id ? savedOrder : o));
+        } else {
+          const orderNo = 'SC-' + String(nextSeq).padStart(4, '0');
+          nextSeq += 1;
+          savedOrder = {
+            id: crypto.randomUUID(),
+            order_no: orderNo,
+            created_at: nowIso,
+            stage_changed_at: nowIso,
+            ...payload
+          };
+          nextOrders = [savedOrder, ...db.orders];
+        }
+
+        const nextActivity = [
+          {
+            id: crypto.randomUUID(),
+            order_no: savedOrder.order_no,
+            action: editingOrder ? `Updated (${savedOrder.status})` : `Created (${savedOrder.status})`,
+            role: currentRole,
+            created_at: nowIso
+          },
+          ...db.activityLogs
+        ];
+
+        saveDb({ ...db, nextOrderSeq: nextSeq, orders: nextOrders, activityLogs: nextActivity });
+        setEditingOrder(null);
+        setActiveNav('orders');
+
+        if (afterAction === 'sticker_and_wa') {
+          setStickerBatch([savedOrder]);
+          window.open(WhatsAppService.getLink('receipt', savedOrder), '_blank');
+        } else if (afterAction === 'sticker_only') {
+          setStickerBatch([savedOrder]);
+        }
+      };
+
+      const handleStatusChange = (order, newStatus) => {
+        if (!confirm(`Change status of ${order.order_no} (${order.customer_name}) to "${newStatus}"?`)) return;
+        const nowIso = new Date().toISOString();
+        const nextOrders = db.orders.map((o) => (o.id === order.id ? { ...o, status: newStatus, stage_changed_at: nowIso } : o));
+        const nextActivity = [
+          { id: crypto.randomUUID(), order_no: order.order_no, action: `Status changed to ${newStatus}`, role: currentRole, created_at: nowIso },
+          ...db.activityLogs
+        ];
+        triggerUndoableChange(db, { ...db, orders: nextOrders, activityLogs: nextActivity }, `${order.order_no} marked ${newStatus}`);
+      };
+
+      const handleLogStickerReprint = (order) => {
+        const nowIso = new Date().toISOString();
+        const nextActivity = [
+          { id: crypto.randomUUID(), order_no: order.order_no, action: 'Cutting sticker printed / reprinted', role: currentRole, created_at: nowIso },
+          ...db.activityLogs
+        ];
+        saveDb({ ...db, activityLogs: nextActivity });
+      };
+
+      const handleDownloadExcel = () => {
+        const todayStr = new Date().toISOString().split('T')[0];
+        const orderRows = db.orders.map((o) => ({
+          Order_No: o.order_no,
+          Created_Date: formatDateDDMMYYYY(o.created_at),
+          Status: o.status,
+          Customer_Name: o.customer_name,
+          Mobile: o.mobile,
+          Design_Name: o.design_name,
+          Total_Pcs: o.total_pcs,
+          Seating_Segments: o.seating_segments,
+          Seating_Feet: o.seating_feet,
+          Seating_Rate: o.seating_rate,
+          Back_Unit: o.back_unit,
+          Back_Segments: o.back_segments,
+          Back_Billable: o.back_billable_qty,
+          Back_Rate: o.back_rate,
+          Visit_Charge: o.visit_charge,
+          Net_Total: o.estimate_total,
+          Advance_Paid: o.advance_amount,
+          Payment_Mode: o.payment_mode,
+          Balance_Due: o.balance_amount,
+          Salesman: o.salesman_name || '',
+          Promised_Delivery: formatDateDDMMYYYY(o.promised_date),
+          Assigned_Tailor: o.assigned_tailor || '',
+          Tailor_Notes: o.tailor_notes || ''
+        }));
+        const tailorRows = db.pieceLogs.map((l) => ({
+          Date: formatDateDDMMYYYY(l.logged_at),
+          Tailor: l.tailor_role,
+          Order_Or_Reason: l.is_manual_adjustment ? `Correction: ${l.adjustment_reason}` : l.order_no,
+          Pieces: l.pcs_count,
+          Rate: l.rate_at_time,
+          Earning: (l.pcs_count || 0) * (l.rate_at_time || 0)
+        }));
+        if (window.XLSX) {
+          const wb = window.XLSX.utils.book_new();
+          window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(orderRows.length ? orderRows : [{ Note: 'No orders' }]), 'Orders');
+          window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(tailorRows.length ? tailorRows : [{ Note: 'No logs' }]), 'Tailor_Piece_Logs');
+          window.XLSX.writeFile(wb, `Shree_Gayatri_Sofa_ERP_${todayStr}.xlsx`);
+        }
+      };
+
+      // Counter Queue Counters
+      const readyForDeliveryCount = db.orders.filter((o) => o.status === 'Ready').length;
+      const balanceDueCount = db.orders.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status) && Number(o.balance_amount) > 0).length;
+      const stuckOrdersList = db.orders.filter((o) => {
+        const limit = db.settings?.stageAlertHours?.[o.status];
+        return limit && getHoursInStage(o) > limit;
+      });
+      const unconfirmedCount = db.orders.filter((o) => ['Measurement Pending', 'Estimate Given'].includes(o.status)).length;
+
+      const filteredOrders = useMemo(() => {
+        const q = searchQuery.toLowerCase().trim();
+        return db.orders
+          .filter((o) => {
+            if (q && !(o.order_no?.toLowerCase().includes(q) || o.customer_name?.toLowerCase().includes(q) || o.mobile?.includes(q) || o.design_name?.toLowerCase().includes(q))) {
+              return false;
+            }
+            if (queueFilter === 'READY_DELIVERY') return o.status === 'Ready';
+            if (queueFilter === 'BALANCE_DUE') return !['Measurement Pending', 'Estimate Given'].includes(o.status) && Number(o.balance_amount) > 0;
+            if (queueFilter === 'STUCK') {
+              const limit = db.settings?.stageAlertHours?.[o.status];
+              return limit && getHoursInStage(o) > limit;
+            }
+            if (queueFilter === 'UNCONFIRMED') return ['Measurement Pending', 'Estimate Given'].includes(o.status);
+            return true;
+          })
+          .sort((a, b) => (a.promised_date || '9999-12-31').localeCompare(b.promised_date || '9999-12-31'));
+      }, [db.orders, searchQuery, queueFilter, db.settings]);
+
+      const globalMatches = useMemo(() => {
+        const q = globalSearchTerm.toLowerCase().trim();
+        if (!q) return db.orders.slice(0, 8);
+        return db.orders.filter((o) =>
+          o.order_no?.toLowerCase().includes(q) || o.customer_name?.toLowerCase().includes(q) || o.mobile?.includes(q)
+        ).slice(0, 10);
+      }, [db.orders, globalSearchTerm]);
+
+      const staffMagicLink = `${window.location.origin}${window.location.pathname}?setup_key=${encodeURIComponent(savedKey)}`;
+
+      // Shared Sidebar Menu Content (used in desktop static sidebar and mobile slide-in drawer)
+      const renderSidebarContent = (isMobileDrawer = false) => (
+        <>
+          <div className="space-y-1.5">
+            {isMobileDrawer && (
+              <div className="flex justify-between items-center pb-3 mb-2 border-b border-gray-200">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded bg-amber-600 text-white font-bold text-xs flex items-center justify-center">SG</div>
+                  <div>
+                    <div className="font-bold text-sm text-gray-900">Shree Gayatri</div>
+                    <div className="text-xs text-gray-500 uppercase">{currentRole.replace('_', ' ')} • {syncStatus}</div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setMobileDrawerOpen(false)}
+                  className="p-2 min-w-[44px] min-h-[44px] text-gray-500 hover:bg-gray-100 rounded inline-flex items-center justify-center"
+                >
+                  <Icon name="X" size={20} />
+                </button>
+              </div>
+            )}
+
+            <button
+              onClick={() => { setEditingOrder(null); selectPage('new_order'); }}
+              className="w-full mb-3 bg-amber-700 hover:bg-amber-800 text-white py-2.5 px-3 rounded font-bold text-sm inline-flex items-center justify-center gap-2 shadow-sm min-h-[44px]"
+            >
+              <Icon name="Plus" size={16} /> New Order / Estimate
+            </button>
+
+            <button
+              onClick={() => selectPage('orders', 'ALL')}
+              className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                activeNav === 'orders' && queueFilter === 'ALL' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              <span className="inline-flex items-center gap-2.5"><Icon name="ListOrdered" size={16} /> All Orders</span>
+              <span className="text-xs opacity-80 tabular-nums">{db.orders.length}</span>
+            </button>
+
+            <button
+              onClick={() => selectPage('orders', 'READY_DELIVERY')}
+              className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                activeNav === 'orders' && queueFilter === 'READY_DELIVERY' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              <span className="inline-flex items-center gap-2.5"><Icon name="PackageCheck" size={16} /> Ready for Delivery</span>
+              <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 tabular-nums">{readyForDeliveryCount}</span>
+            </button>
+
+            <button
+              onClick={() => selectPage('orders', 'BALANCE_DUE')}
+              className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                activeNav === 'orders' && queueFilter === 'BALANCE_DUE' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              <span className="inline-flex items-center gap-2.5"><Icon name="IndianRupee" size={16} /> Balance Due</span>
+              <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-800 tabular-nums">{balanceDueCount}</span>
+            </button>
+
+            <button
+              onClick={() => selectPage('orders', 'UNCONFIRMED')}
+              className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                activeNav === 'orders' && queueFilter === 'UNCONFIRMED' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              <span className="inline-flex items-center gap-2.5"><Icon name="Clock" size={16} /> Unconfirmed</span>
+              <span className="text-xs opacity-80 tabular-nums">{unconfirmedCount}</span>
+            </button>
+
+            {stuckOrdersList.length > 0 && (
+              <button
+                onClick={() => selectPage('orders', 'STUCK')}
+                className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                  activeNav === 'orders' && queueFilter === 'STUCK' ? 'bg-red-800 text-white' : 'bg-red-50 text-red-800 hover:bg-red-100'
+                }`}
+              >
+                <span className="inline-flex items-center gap-2.5"><Icon name="AlertTriangle" size={16} /> Stuck Alerts</span>
+                <span className="text-xs font-bold tabular-nums">{stuckOrdersList.length}</span>
+              </button>
+            )}
+
+            {isAdmin && (
+              <div className="pt-3 mt-3 border-t border-gray-200 space-y-1.5">
+                <div className="px-3 text-xs font-bold uppercase tracking-wider text-gray-400">Admin Controls</div>
+                <button
+                  onClick={() => selectPage('reports')}
+                  className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex items-center gap-2.5 min-h-[44px] md:min-h-0 ${
+                    activeNav === 'reports' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  <Icon name="BarChart3" size={16} /> Reports & Analytics
+                </button>
+                <button
+                  onClick={() => selectPage('settings')}
+                  className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex items-center gap-2.5 min-h-[44px] md:min-h-0 ${
+                    activeNav === 'settings' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  <Icon name="Settings" size={16} /> Shop Settings & Data
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="pt-3 border-t border-gray-200 space-y-2">
+            {/* Mobile-only Install App & Logout inside Drawer */}
+            {isMobileDrawer && (
+              <div className="space-y-2 pb-2 border-b border-gray-200">
+                <button
+                  onClick={() => { setMobileDrawerOpen(false); triggerInstall(); }}
+                  className="w-full px-3 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded text-sm font-semibold flex items-center gap-2.5 min-h-[44px]"
+                >
+                  <Icon name="Download" size={16} /> Install App
+                </button>
+                <button
+                  onClick={() => { setMobileDrawerOpen(false); onLogout(); }}
+                  className="w-full px-3 py-2.5 bg-red-50 hover:bg-red-100 text-red-700 rounded text-sm font-semibold flex items-center gap-2.5 min-h-[44px]"
+                >
+                  <Icon name="LogOut" size={16} /> Logout
+                </button>
+              </div>
+            )}
+            <div className="text-xs text-gray-500 px-2 space-y-0.5">
+              <div>Fixed Rate Policy Active</div>
+              <div>Round-up: 0.25 ft increments</div>
+            </div>
+          </div>
+        </>
+      );
+
+      return (
+        <div className="min-h-screen flex flex-col w-full max-w-full overflow-x-hidden">
+          {/* Top Application Header */}
+          {/* Mobile (<768px): Hamburger + Logo + Short Title + Search Icon ONLY */}
+          {/* Desktop (>=768px): Full title + Quick Search Ctrl+K + Install App + Logout */}
+          <header className="bg-gray-900 text-white px-3 md:px-4 py-2 flex justify-between items-center border-b border-gray-800 sticky top-0 z-30 no-print">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <button
+                type="button"
+                aria-label="Open navigation menu"
+                onClick={() => setMobileDrawerOpen(true)}
+                className="md:hidden p-2 -ml-1 min-w-[44px] min-h-[44px] rounded text-gray-200 hover:bg-gray-800 inline-flex items-center justify-center shrink-0"
+              >
+                <Icon name="Menu" size={22} />
+              </button>
+              <div className="w-8 h-8 md:w-7 md:h-7 rounded bg-amber-600 text-white font-bold text-xs flex items-center justify-center shrink-0">
+                SG
+              </div>
+              <div className="min-w-0">
+                <div className="font-bold text-sm leading-tight truncate md:hidden">
+                  Shree Gayatri — Sofa ERP
+                </div>
+                <div className="font-bold text-sm leading-tight hidden md:block">
+                  Shree Gayatri Handloom House — Sofa Cover Dept
+                </div>
+                <div className="text-xs text-gray-400 flex items-center gap-1.5 truncate">
+                  <span>Role: <strong className="text-gray-200 uppercase">{currentRole.replace('_', ' ')}</strong></span>
+                  <span>•</span>
+                  <span className="text-emerald-400">{syncStatus}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Mobile Search Icon Button Only */}
+              <button
+                type="button"
+                aria-label="Quick Search"
+                onClick={() => { setGlobalSearchOpen(true); setGlobalSearchTerm(''); }}
+                className="md:hidden p-2 min-w-[44px] min-h-[44px] bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 rounded inline-flex items-center justify-center"
+              >
+                <Icon name="Search" size={18} />
+              </button>
+
+              {/* Desktop Header Buttons (Hidden on mobile < 768px) */}
+              <button
+                onClick={() => { setGlobalSearchOpen(true); setGlobalSearchTerm(''); }}
+                className="hidden md:inline-flex bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 px-3 py-1.5 rounded text-xs items-center gap-2"
+              >
+                <Icon name="Search" size={14} />
+                <span>Quick Search</span>
+                <kbd className="bg-gray-900 px-1.5 py-0.5 rounded text-[10px] text-gray-400">Ctrl+K</kbd>
+              </button>
+              <button onClick={triggerInstall} className="hidden md:inline-flex bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 px-2.5 py-1.5 rounded text-xs font-medium items-center gap-1">
+                <Icon name="Download" size={14} /> Install App
+              </button>
+              <button onClick={onLogout} className="hidden md:inline-flex bg-gray-800 hover:bg-red-900/60 text-gray-200 border border-gray-700 px-2.5 py-1.5 rounded text-xs font-medium items-center gap-1">
+                <Icon name="LogOut" size={14} /> Logout
+              </button>
+            </div>
+          </header>
+
+          {/* Mobile Slide-In Navigation Drawer (< 768px) */}
+          {mobileDrawerOpen && (
+            <div className="fixed inset-0 z-50 md:hidden flex no-print">
+              <div
+                className="fixed inset-0 bg-black/50"
+                onClick={() => setMobileDrawerOpen(false)}
+              />
+              <aside className="relative w-72 max-w-[82vw] bg-white h-full p-4 flex flex-col justify-between shadow-2xl z-10 overflow-y-auto">
+                {renderSidebarContent(true)}
+              </aside>
+            </div>
+          )}
+
+          <div className="flex-1 flex w-full max-w-full overflow-x-hidden">
+            {/* Desktop Left Sidebar Navigation (Hidden below 768px, visible >= 768px) */}
+            <aside className="hidden md:flex w-56 bg-white border-r border-gray-300 p-3 flex-col justify-between shrink-0 no-print">
+              {renderSidebarContent(false)}
+            </aside>
+
+            {/* Main Content Area */}
+            <main className="flex-1 min-w-0 p-3 md:p-5">
+              {undoState && (
+                <div className="mb-4 bg-gray-900 text-white px-4 py-2.5 rounded flex justify-between items-center shadow-sm no-print">
+                  <span className="text-sm">{undoState.label}</span>
+                  <button onClick={handleUndo} className="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded text-xs font-bold min-h-[38px]">
+                    Undo (10s)
+                  </button>
+                </div>
+              )}
+
+              {activeNav === 'new_order' && (
+                <OrderEntryScreen
+                  existingOrder={editingOrder}
+                  allOrders={db.orders}
+                  salesmen={db.salesmen}
+                  currentRole={currentRole}
+                  onCancel={() => { setEditingOrder(null); setActiveNav('orders'); }}
+                  onCommitOrder={handleCommitOrder}
+                />
+              )}
+
+              {activeNav === 'orders' && (
+                <div className="bg-white border border-gray-300 rounded shadow-sm">
+                  {/* Filters & Batch Actions Bar */}
+                  <div className="p-3 md:p-3.5 border-b border-gray-200 flex flex-col md:flex-row justify-between items-stretch md:items-center gap-2.5 bg-gray-50">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1">
+                      <div className="relative flex-1 md:max-w-xs">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"><Icon name="Search" size={16} /></span>
+                        <input
+                          placeholder="Filter by Order No, Name, Mobile..."
+                          className="w-full pl-9 pr-3 py-2 border border-gray-300 bg-white rounded text-sm focus:border-amber-600 focus:outline-none"
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                        />
+                      </div>
+                      <select
+                        className="border border-gray-300 bg-white rounded px-3 py-2 text-sm font-medium"
+                        value={queueFilter}
+                        onChange={(e) => setQueueFilter(e.target.value)}
+                      >
+                        <option value="ALL">All Orders ({db.orders.length})</option>
+                        <option value="READY_DELIVERY">Ready for Delivery ({readyForDeliveryCount})</option>
+                        <option value="BALANCE_DUE">Balance Due ({balanceDueCount})</option>
+                        <option value="UNCONFIRMED">Unconfirmed Estimates ({unconfirmedCount})</option>
+                        <option value="STUCK">Stuck in Stage ({stuckOrdersList.length})</option>
+                      </select>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => { setEditingOrder(null); setActiveNav('new_order'); }}
+                        className="md:hidden flex-1 bg-amber-700 hover:bg-amber-800 text-white px-3.5 py-2.5 rounded text-sm font-bold inline-flex items-center justify-center gap-1.5 min-h-[44px]"
+                      >
+                        <Icon name="Plus" size={16} /> New Order
+                      </button>
+                      {selectedIds.length > 0 && (
+                        <button
+                          onClick={() => {
+                            const chosen = db.orders.filter((o) => selectedIds.includes(o.id));
+                            setStickerBatch(chosen);
+                          }}
+                          className="bg-amber-700 hover:bg-amber-800 text-white px-3 py-2 rounded text-xs font-bold inline-flex items-center gap-1.5 min-h-[44px] md:min-h-0"
+                        >
+                          <Icon name="Printer" size={14} /> Batch Print ({selectedIds.length})
+                        </button>
+                      )}
+                      {isAdmin && (
+                        <button
+                          onClick={handleDownloadExcel}
+                          className="bg-white hover:bg-gray-50 border border-gray-300 text-gray-800 px-3 py-2 rounded text-xs font-semibold inline-flex items-center justify-center gap-1.5 min-h-[44px] md:min-h-0"
+                        >
+                          <Icon name="Download" size={14} /> Excel Backup
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* ======================================================= */}
+                  {/* MOBILE CARD LIST (< 768px):                             */}
+                  {/* Order no., customer name, design, due date, status chip */}
+                  {/* balance, with tap to open details                       */}
+                  {/* ======================================================= */}
+                  <div className="md:hidden divide-y divide-gray-200">
+                    {filteredOrders.length === 0 ? (
+                      <div className="p-8 text-center text-gray-500 text-sm">
+                        No orders match the current filter. Tap <strong>New Order</strong> above to create one.
+                      </div>
+                    ) : (
+                      filteredOrders.map((o) => {
+                        const urgency = getDueUrgency(o.promised_date, o.status);
+                        const isConfirmed = !['Measurement Pending', 'Estimate Given'].includes(o.status);
+                        return (
+                          <div
+                            key={o.id}
+                            onClick={() => { setEditingOrder(o); setActiveNav('new_order'); }}
+                            className="p-4 hover:bg-gray-50 active:bg-gray-100 cursor-pointer space-y-2.5"
+                          >
+                            <div className="flex justify-between items-start gap-2">
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-base text-gray-900">{o.order_no}</span>
+                                  {o.is_demo && <span className="text-[11px] px-1.5 py-0.5 bg-gray-200 text-gray-700 rounded font-semibold">DEMO</span>}
+                                </div>
+                                <div className="font-semibold text-base text-gray-900 mt-0.5">{o.customer_name}</div>
+                                <div className="text-xs text-gray-500">{o.mobile} • {o.salesman_name}</div>
+                              </div>
+                              <StatusChip status={o.status} />
+                            </div>
+
+                            <div className="text-sm text-gray-800">
+                              <span className="font-medium">{o.design_name}</span>
+                              <span className="text-gray-500"> • {o.total_pcs} pcs • {o.seating_feet} ft seat</span>
+                            </div>
+
+                            <div className="flex flex-wrap justify-between items-center gap-2 pt-1 border-t border-gray-100 tabular-nums">
+                              <div className="text-xs text-gray-600 flex items-center gap-1.5">
+                                <span>Due: <strong className="text-gray-900">{formatDateDDMMYYYY(o.promised_date)}</strong></span>
+                                {urgency && (
+                                  <span className={`px-1.5 py-0.5 rounded text-[11px] font-bold ${
+                                    urgency.level === 'overdue' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-900'
+                                  }`}>
+                                    {urgency.label}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-sm">
+                                <span className="text-gray-500 text-xs mr-1">Bal:</span>
+                                <strong className={Number(o.balance_amount) > 0 ? 'text-red-700' : 'text-emerald-700'}>
+                                  {formatINR(o.balance_amount)}
+                                </strong>
+                              </div>
+                            </div>
+
+                            {/* Quick Mobile Actions Row (stopPropagation so tapping buttons doesn't trigger card open) */}
+                            <div className="pt-2 flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
+                              {isConfirmed && (
+                                <button
+                                  type="button"
+                                  onClick={() => setStickerBatch([o])}
+                                  className="px-3 py-2 border border-gray-300 bg-white rounded text-xs font-semibold text-gray-800 inline-flex items-center gap-1.5 min-h-[44px]"
+                                >
+                                  <Icon name="Printer" size={15} /> Sticker
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setTimelineOrder(o)}
+                                className="px-3 py-2 border border-gray-300 bg-white rounded text-xs font-semibold text-gray-800 inline-flex items-center gap-1.5 min-h-[44px]"
+                              >
+                                <Icon name="History" size={15} /> History
+                              </button>
+                              {o.status === 'Silai Done' && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleStatusChange(o, 'Ready')}
+                                  className="px-3 py-2 bg-emerald-700 text-white rounded text-xs font-semibold min-h-[44px]"
+                                >
+                                  Mark Ready
+                                </button>
+                              )}
+                              {o.status === 'Ready' && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleStatusChange(o, 'Delivered')}
+                                  className="px-3 py-2 bg-gray-900 text-white rounded text-xs font-semibold min-h-[44px]"
+                                >
+                                  Deliver
+                                </button>
+                              )}
+                              <a
+                                href={WhatsAppService.getLink(
+                                  o.status === 'Ready' ? 'ready' : o.status === 'Delivered' ? 'delivered' : isConfirmed ? 'receipt' : 'followup',
+                                  o
+                                )}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="ml-auto px-3 py-2 border border-gray-300 bg-white text-emerald-700 rounded text-xs font-semibold inline-flex items-center gap-1.5 min-h-[44px]"
+                              >
+                                <Icon name="MessageSquare" size={15} /> WhatsApp
+                              </a>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {/* ======================================================= */}
+                  {/* DESKTOP TABLE (>= 768px — kept identical)               */}
+                  {/* ======================================================= */}
+                  <div className="hidden md:block overflow-x-auto max-h-[75vh]">
+                    <table className="w-full text-left border-collapse tabular-nums">
+                      <thead className="bg-gray-100 text-gray-600 text-xs uppercase sticky top-0 z-10 border-b border-gray-300">
+                        <tr>
+                          <th className="p-2.5 w-8">
+                            <input
+                              type="checkbox"
+                              checked={filteredOrders.length > 0 && selectedIds.length === filteredOrders.length}
+                              onChange={(e) => setSelectedIds(e.target.checked ? filteredOrders.map((o) => o.id) : [])}
+                            />
+                          </th>
+                          <th className="p-2.5">Order No</th>
+                          <th className="p-2.5">Customer & Mobile</th>
+                          <th className="p-2.5">Design & Qty</th>
+                          <th className="p-2.5">Delivery Due</th>
+                          <th className="p-2.5">Status</th>
+                          <th className="p-2.5 text-right">Total</th>
+                          <th className="p-2.5 text-right">Balance</th>
+                          <th className="p-2.5 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200 text-sm">
+                        {filteredOrders.length === 0 ? (
+                          <tr>
+                            <td colSpan={9} className="p-10 text-center text-gray-500">
+                              No orders match the current filter. Click <strong>New Order / Estimate</strong> to add one.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredOrders.map((o) => {
+                            const urgency = getDueUrgency(o.promised_date, o.status);
+                            const stageLimit = db.settings?.stageAlertHours?.[o.status];
+                            const isStuck = stageLimit && getHoursInStage(o) > stageLimit;
+                            const isConfirmed = !['Measurement Pending', 'Estimate Given'].includes(o.status);
+
+                            return (
+                              <tr key={o.id} className="hover:bg-gray-50">
+                                <td className="p-2.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedIds.includes(o.id)}
+                                    onChange={(e) =>
+                                      setSelectedIds((prev) =>
+                                        e.target.checked ? [...prev, o.id] : prev.filter((id) => id !== o.id)
+                                      )
+                                    }
+                                  />
+                                </td>
+                                <td className="p-2.5 font-bold text-gray-900 whitespace-nowrap">
+                                  {o.order_no}
+                                  {o.is_demo && <span className="ml-1.5 text-[10px] px-1 py-0.5 bg-gray-200 text-gray-600 rounded">DEMO</span>}
+                                </td>
+                                <td className="p-2.5">
+                                  <div className="font-semibold text-gray-900">{o.customer_name}</div>
+                                  <div className="text-xs text-gray-500">{o.mobile} • {o.salesman_name}</div>
+                                </td>
+                                <td className="p-2.5">
+                                  <div className="font-medium text-gray-900">{o.design_name}</div>
+                                  <div className="text-xs text-gray-500">{o.total_pcs} pcs • {o.seating_feet} ft seat</div>
+                                </td>
+                                <td className="p-2.5 whitespace-nowrap">
+                                  <div className="font-medium text-gray-900">{formatDateDDMMYYYY(o.promised_date)}</div>
+                                  {urgency && (
+                                    <span className={`inline-block mt-0.5 px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                                      urgency.level === 'overdue' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-900'
+                                    }`}>
+                                      {urgency.label}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="p-2.5 whitespace-nowrap">
+                                  <StatusChip status={o.status} />
+                                  {isStuck && (
+                                    <div className="text-[11px] font-semibold text-red-700 mt-0.5">
+                                      Stuck {Math.round(getHoursInStage(o))}h
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="p-2.5 text-right font-medium text-gray-900">{formatINR(o.estimate_total)}</td>
+                                <td className={`p-2.5 text-right font-bold ${Number(o.balance_amount) > 0 ? 'text-red-700' : 'text-emerald-700'}`}>
+                                  {formatINR(o.balance_amount)}
+                                </td>
+                                <td className="p-2.5 text-right whitespace-nowrap">
+                                  <div className="inline-flex items-center gap-1">
+                                    <button
+                                      title="Edit / Open"
+                                      onClick={() => { setEditingOrder(o); setActiveNav('new_order'); }}
+                                      className="px-2 py-1 border border-gray-300 bg-white hover:bg-gray-100 rounded text-xs font-semibold text-gray-700"
+                                    >
+                                      Open
+                                    </button>
+                                    {isConfirmed && (
+                                      <button
+                                        title="Print / Reprint Sticker"
+                                        onClick={() => setStickerBatch([o])}
+                                        className="p-1.5 border border-gray-300 bg-white hover:bg-gray-100 rounded text-gray-700"
+                                      >
+                                        <Icon name="Printer" size={14} />
+                                      </button>
+                                    )}
+                                    <button
+                                      title="Order Timeline"
+                                      onClick={() => setTimelineOrder(o)}
+                                      className="p-1.5 border border-gray-300 bg-white hover:bg-gray-100 rounded text-gray-700"
+                                    >
+                                      <Icon name="History" size={14} />
+                                    </button>
+                                    {o.status === 'Silai Done' && (
+                                      <button
+                                        onClick={() => handleStatusChange(o, 'Ready')}
+                                        className="px-2 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-xs font-semibold"
+                                      >
+                                        Mark Ready
+                                      </button>
+                                    )}
+                                    {o.status === 'Ready' && (
+                                      <button
+                                        onClick={() => handleStatusChange(o, 'Delivered')}
+                                        className="px-2 py-1 bg-gray-900 hover:bg-gray-800 text-white rounded text-xs font-semibold"
+                                      >
+                                        Deliver
+                                      </button>
+                                    )}
+                                    <a
+                                      title="Send WhatsApp"
+                                      href={WhatsAppService.getLink(
+                                        o.status === 'Ready' ? 'ready' : o.status === 'Delivered' ? 'delivered' : isConfirmed ? 'receipt' : 'followup',
+                                        o
+                                      )}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="p-1.5 border border-gray-300 bg-white hover:bg-emerald-50 text-emerald-700 rounded"
+                                    >
+                                      <Icon name="MessageSquare" size={14} />
+                                    </a>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {isAdmin && activeNav === 'reports' && (
+                <AdminReportsView db={db} onDownloadExcel={handleDownloadExcel} />
+              )}
+
+              {isAdmin && activeNav === 'settings' && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                  {/* Demo Data Seeder & Wipe */}
+                  <div className="bg-white border border-gray-300 rounded p-4 space-y-3">
+                    <h3 className="font-bold text-base text-gray-900">Demo Test Data (30 Realistic Orders)</h3>
+                    <p className="text-xs text-gray-600">
+                      Load 30 sample orders across all stages (overdue, due today, tailors, salesmen, measurement visits) to test every report and workflow, then wipe cleanly with one click.
+                    </p>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <button
+                        onClick={() => {
+                          saveDb(buildDemoDataset(db));
+                          alert('30 realistic demo orders loaded.');
+                        }}
+                        className="px-3.5 py-2.5 bg-amber-700 hover:bg-amber-800 text-white rounded text-xs font-bold min-h-[44px] md:min-h-0"
+                      >
+                        Seed 30 Demo Orders
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!confirm('Remove all demo orders and demo logs? Real shop orders will remain untouched.')) return;
+                          saveDb({
+                            ...db,
+                            orders: db.orders.filter((o) => !o.is_demo),
+                            pieceLogs: db.pieceLogs.filter((l) => !l.is_demo),
+                            activityLogs: db.activityLogs.filter((a) => !a.is_demo)
+                          });
+                        }}
+                        className="px-3.5 py-2.5 bg-white hover:bg-red-50 border border-red-300 text-red-700 rounded text-xs font-bold min-h-[44px] md:min-h-0"
+                      >
+                        Wipe Demo Data
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Salesman Management */}
+                  <div className="bg-white border border-gray-300 rounded p-4 space-y-3">
+                    <h3 className="font-bold text-base text-gray-900">Salesmen List</h3>
+                    <div className="flex gap-2">
+                      <input
+                        placeholder="Add new salesman name..."
+                        className="border border-gray-300 rounded px-3 py-2 text-sm flex-1"
+                        value={newSalesman}
+                        onChange={(e) => setNewSalesman(e.target.value)}
+                      />
+                      <button
+                        onClick={() => {
+                          const clean = newSalesman.trim();
+                          if (!clean || db.salesmen.includes(clean)) return;
+                          saveDb({ ...db, salesmen: [...db.salesmen, clean] });
+                          setNewSalesman('');
+                        }}
+                        className="px-4 py-2 bg-gray-900 text-white rounded text-xs font-bold min-h-[44px] md:min-h-0"
+                      >
+                        Add
+                      </button>
+                    </div>
+                    <div className="divide-y divide-gray-200 border border-gray-200 rounded">
+                      {db.salesmen.map((s) => (
+                        <div key={s} className="px-3 py-2.5 flex justify-between items-center text-sm">
+                          <span className="font-medium">{s}</span>
+                          <button
+                            onClick={() => {
+                              if (!confirm(`Remove "${s}" from active salesmen list?`)) return;
+                              saveDb({ ...db, salesmen: db.salesmen.filter((x) => x !== s) });
+                            }}
+                            className="text-xs text-red-700 hover:underline font-semibold py-1 px-2"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Role PINs & Tailor Piece Rates */}
+                  <div className="bg-white border border-gray-300 rounded p-4 space-y-3">
+                    <h3 className="font-bold text-base text-gray-900">Role Login PINs & Tailor Piece Rates</h3>
+                    <div className="space-y-2">
+                      {[
+                        { key: 'admin', label: 'Owner (Admin) PIN' },
+                        { key: 'sales', label: 'Sales Counter PIN' },
+                        { key: 'cutting', label: 'Cutting Master PIN' },
+                        { key: 'tailor_1', label: 'Tailor 1 PIN' },
+                        { key: 'tailor_2', label: 'Tailor 2 PIN' }
+                      ].map((r) => (
+                        <div key={r.key} className="flex justify-between items-center text-sm">
+                          <span className="text-gray-700 font-medium">{r.label}</span>
+                          <input
+                            maxLength={4}
+                            className="border border-gray-300 rounded px-2.5 py-1.5 w-24 text-center font-bold tabular-nums"
+                            value={pinEdits[r.key] || ''}
+                            onChange={(e) => setPinEdits({ ...pinEdits, [r.key]: e.target.value })}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-gray-200">
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Tailor 1 Rate (₹/pc)</label>
+                        <input type="number" className="w-full border border-gray-300 rounded px-2.5 py-2 text-sm font-bold tabular-nums" value={rateEdits.tailor_1} onChange={(e) => setRateEdits({ ...rateEdits, tailor_1: Number(e.target.value) })} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Tailor 2 Rate (₹/pc)</label>
+                        <input type="number" className="w-full border border-gray-300 rounded px-2.5 py-2 text-sm font-bold tabular-nums" value={rateEdits.tailor_2} onChange={(e) => setRateEdits({ ...rateEdits, tailor_2: Number(e.target.value) })} />
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        saveDb({ ...db, settings: { ...db.settings, pins: pinEdits, tailorRates: rateEdits } });
+                        alert('PINs and Tailor Rates saved.');
+                      }}
+                      className="w-full sm:w-auto px-4 py-2.5 bg-gray-900 text-white rounded text-xs font-bold min-h-[44px] md:min-h-0"
+                    >
+                      Save PINs & Rates
+                    </button>
+                  </div>
+
+                  {/* Device Approval, Sticker Size & Stage Alert Thresholds */}
+                  <div className="bg-white border border-gray-300 rounded p-4 space-y-4">
+                    <div>
+                      <h3 className="font-bold text-base text-gray-900 mb-2">Staff Mobile Onboarding & Device Approval</h3>
+                      <div className="flex flex-wrap gap-2 mb-3">
+                        <button onClick={() => { navigator.clipboard.writeText(staffMagicLink); alert('Staff setup link copied.'); }} className="px-3 py-2 bg-gray-900 text-white rounded text-xs font-semibold min-h-[44px] md:min-h-0">
+                          Copy Staff Setup Link
+                        </button>
+                        <a href={`https://wa.me/?text=${encodeURIComponent('Shree Gayatri Sofa Cover App Link:\n' + staffMagicLink)}`} target="_blank" rel="noreferrer" className="px-3 py-2 bg-emerald-700 text-white rounded text-xs font-semibold inline-flex items-center min-h-[44px] md:min-h-0">
+                          Send via WhatsApp
+                        </a>
+                      </div>
+                      <div className="divide-y divide-gray-200 border border-gray-200 rounded">
+                        {db.devices.length === 0 ? (
+                          <div className="p-3 text-xs text-gray-500">No staff devices pending approval.</div>
+                        ) : (
+                          db.devices.map((d) => (
+                            <div key={d.fp} className="p-2.5 flex justify-between items-center text-xs gap-2">
+                              <div>
+                                <span className="font-bold uppercase">{d.role}</span> • <span className="font-mono">{d.fp}</span> ({d.status})
+                              </div>
+                              <div className="flex gap-1">
+                                {d.status !== 'approved' && (
+                                  <button onClick={() => saveDb({ ...db, devices: db.devices.map((x) => (x.fp === d.fp ? { ...x, status: 'approved' } : x)) })} className="px-2.5 py-1.5 bg-emerald-700 text-white rounded font-bold">
+                                    Approve
+                                  </button>
+                                )}
+                                <button onClick={() => saveDb({ ...db, devices: db.devices.filter((x) => x.fp !== d.fp) })} className="px-2.5 py-1.5 bg-red-100 text-red-700 rounded font-bold">
+                                  Revoke
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="pt-3 border-t border-gray-200">
+                      <h4 className="font-bold text-xs uppercase text-gray-600 mb-2">Sticker Label Size (mm) & Stage Stuck Alerts (Hours)</h4>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1 mobile-label">Width (mm)</label>
+                          <input type="number" className="border border-gray-300 rounded px-2.5 py-1.5 w-full text-sm tabular-nums" value={dimEdits.w} onChange={(e) => setDimEdits({ ...dimEdits, w: Number(e.target.value) })} />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1 mobile-label">Height (mm)</label>
+                          <input type="number" className="border border-gray-300 rounded px-2.5 py-1.5 w-full text-sm tabular-nums" value={dimEdits.h} onChange={(e) => setDimEdits({ ...dimEdits, h: Number(e.target.value) })} />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1 mobile-label">Cutting Alert (h)</label>
+                          <input type="number" className="border border-gray-300 rounded px-2.5 py-1.5 w-full text-sm tabular-nums" value={alertEdits['Cutting Pending']} onChange={(e) => setAlertEdits({ ...alertEdits, 'Cutting Pending': Number(e.target.value) })} />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1 mobile-label">Tailor Alert (h)</label>
+                          <input type="number" className="border border-gray-300 rounded px-2.5 py-1.5 w-full text-sm tabular-nums" value={alertEdits['With Tailor']} onChange={(e) => setAlertEdits({ ...alertEdits, 'With Tailor': Number(e.target.value) })} />
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          saveDb({
+                            ...db,
+                            settings: { ...db.settings, sticker_width_mm: dimEdits.w, sticker_height_mm: dimEdits.h, stageAlertHours: alertEdits }
+                          });
+                          alert('Sticker & Alert settings saved.');
+                        }}
+                        className="mt-3 w-full sm:w-auto px-4 py-2.5 bg-gray-900 text-white rounded text-xs font-bold min-h-[44px] md:min-h-0"
+                      >
+                        Save Sticker & Alert Settings
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </main>
+          </div>
+
+          {/* Ctrl+K Global Search Modal */}
+          {globalSearchOpen && (
+            <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 pt-14 md:pt-20 p-4" onClick={() => setGlobalSearchOpen(false)}>
+              <div className="bg-white rounded-md border border-gray-300 max-w-lg w-full shadow-xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                <div className="p-3 border-b border-gray-200 flex items-center gap-2">
+                  <Icon name="Search" size={16} className="text-gray-400" />
+                  <input
+                    autoFocus
+                    placeholder="Type Order No (SC-0001), Customer Name, or Mobile..."
+                    className="w-full text-sm focus:outline-none"
+                    value={globalSearchTerm}
+                    onChange={(e) => setGlobalSearchTerm(e.target.value)}
+                  />
+                  <button onClick={() => setGlobalSearchOpen(false)} className="text-xs text-gray-500 px-2 py-1">ESC</button>
+                </div>
+                <div className="max-h-72 overflow-y-auto divide-y divide-gray-100">
+                  {globalMatches.length === 0 ? (
+                    <div className="p-6 text-center text-xs text-gray-500">No matching orders found.</div>
+                  ) : (
+                    globalMatches.map((o) => (
+                      <button
+                        key={o.id}
+                        onClick={() => {
+                          setGlobalSearchOpen(false);
+                          setEditingOrder(o);
+                          setActiveNav('new_order');
+                        }}
+                        className="w-full text-left px-4 py-3 hover:bg-gray-50 flex justify-between items-center gap-2"
+                      >
+                        <div>
+                          <span className="font-bold text-sm text-gray-900">{o.order_no}</span>
+                          <span className="ml-2 text-sm text-gray-700">{o.customer_name}</span>
+                          <div className="text-xs text-gray-500">{o.mobile} • {o.design_name}</div>
+                        </div>
+                        <StatusChip status={o.status} />
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {stickerBatch && (
+            <StickerPrintModal
+              ordersList={stickerBatch}
+              settings={db.settings}
+              onClose={() => setStickerBatch(null)}
+              onLogReprint={handleLogStickerReprint}
+            />
+          )}
+
+          {timelineOrder && (
+            <OrderTimelineModal
+              order={timelineOrder}
+              activityLogs={db.activityLogs}
+              onClose={() => setTimelineOrder(null)}
+            />
+          )}
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // MAIN APPLICATION ENTRY (Auth + Realtime Cloud Sync)
+    // =========================================================================
+    const ROLES = [
+      { label: 'Owner (Admin)', role: 'admin' },
+      { label: 'Sales Counter', role: 'sales' },
+      { label: 'Cutting Master', role: 'cutting' },
+      { label: 'Tailor 1', role: 'tailor_1' },
+      { label: 'Tailor 2', role: 'tailor_2' }
+    ];
+
+    // ---- SAFE SYNC HELPERS (merge my changes onto the latest cloud copy; never hard-delete) ----
+    function isNotFoundError(e) {
+      if (!e) return false;
+      return /404|not.?found/i.test(String(e.statusCode || e.status || '') + ' ' + String(e.message || '') + ' ' + String(e.error || ''));
+    }
+
+    function mergeDb(base, local, cloud) {
+      const b0 = base || {};
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+      const byId = (key, idFn, tsField) => {
+        const bm = new Map((b0[key] || []).map((x) => [idFn(x), x]));
+        const out = new Map((cloud[key] || []).map((x) => [idFn(x), x]));
+        (local[key] || []).forEach((v) => {
+          const k = idFn(v);
+          const b = bm.get(k);
+          if (!b || !same(b, v)) out.set(k, v);
+        });
+        const arr = Array.from(out.values());
+        if (tsField) arr.sort((a, b) => String(b[tsField] || '').localeCompare(String(a[tsField] || '')));
+        return arr;
+      };
+      const merged = { ...cloud };
+      new Set([...Object.keys(local), ...Object.keys(cloud)]).forEach((k) => {
+        if (k === 'orders') merged.orders = byId('orders', (o) => o.id, 'created_at');
+        else if (k === 'activityLogs') merged.activityLogs = byId('activityLogs', (l) => l.id, 'created_at');
+        else if (k === 'pieceLogs') merged.pieceLogs = byId('pieceLogs', (l) => l.id, 'logged_at');
+        else if (k === 'devices') merged.devices = byId('devices', (d) => d.fp, null);
+        else if (k === 'nextOrderSeq') merged.nextOrderSeq = Math.max(Number(local.nextOrderSeq) || 1, Number(cloud.nextOrderSeq) || 1);
+        else if (k === 'settings') {
+          const st = { ...(cloud.settings || {}) };
+          Object.keys(local.settings || {}).forEach((sk) => {
+            if (!same((local.settings || {})[sk], (b0.settings || {})[sk])) st[sk] = local.settings[sk];
+          });
+          merged.settings = st;
+        } else {
+          merged[k] = !same(local[k], b0[k]) ? local[k] : cloud[k];
+        }
+      });
+      // Two devices saving at the same moment could pick the same order number: renumber MY new order.
+      const baseIds = new Set((b0.orders || []).map((o) => o.id));
+      const mineNew = new Set((local.orders || []).filter((o) => !baseIds.has(o.id)).map((o) => o.id));
+      const cloudIds = new Set((cloud.orders || []).map((o) => o.id));
+      (merged.orders || []).forEach((o, i) => {
+        if (!mineNew.has(o.id) || cloudIds.has(o.id)) return;
+        const clash = merged.orders.some((x) => x.id !== o.id && x.order_no === o.order_no);
+        if (!clash) return;
+        const oldNo = o.order_no;
+        const newNo = 'SC-' + String(merged.nextOrderSeq).padStart(4, '0');
+        merged.nextOrderSeq += 1;
+        merged.orders[i] = { ...o, order_no: newNo };
+        merged.activityLogs = (merged.activityLogs || []).map((l) => (l.order_no === oldNo && !(b0.activityLogs || []).some((x) => x.id === l.id) && (local.activityLogs || []).some((x) => x.id === l.id) ? { ...l, order_no: newNo } : l));
+      });
+      return merged;
+    }
+
+    function App() {
+      const [savedKey, setSavedKey] = useState(() => localStorage.getItem('sg_supabase_key') || '');
+      const [keyInput, setKeyInput] = useState('');
+      const [supabaseClient, setSupabaseClient] = useState(null);
+
+      const [db, setDb] = useState(() => {
+        const cached = localStorage.getItem('sg_cloud_db_cache');
+        return cached ? JSON.parse(cached) : INITIAL_DB;
+      });
+      const [syncStatus, setSyncStatus] = useState('Ready');
+      const baseDbRef = useRef(null);       // last copy known to be in the cloud
+      const cloudReadyRef = useRef(false);  // true only after the cloud copy was read successfully
+      const saveChainRef = useRef(Promise.resolve());
+
+      const [currentRole, setCurrentRole] = useState(() => sessionStorage.getItem('sg_active_role') || null);
+      const [selectedRole, setSelectedRole] = useState(ROLES[0].role);
+      const [pin, setPin] = useState('');
+      const [installPrompt, setInstallPrompt] = useState(null);
+
+      const scannedOrderNo = new URLSearchParams(window.location.search).get('scan');
+      const myFp = getDeviceFingerprint();
+
+      useEffect(() => {
+        const handler = (e) => { e.preventDefault(); setInstallPrompt(e); };
+        window.addEventListener('beforeinstallprompt', handler);
+        return () => window.removeEventListener('beforeinstallprompt', handler);
+      }, []);
+
+      const triggerInstall = async () => {
+        if (installPrompt) {
+          installPrompt.prompt();
+          await installPrompt.userChoice;
+          setInstallPrompt(null);
+        } else {
+          alert('To install this app:\n• Desktop Chrome: Click the Install icon in the right side of the address bar.\n• Mobile Safari/Chrome: Tap Share / 3-dots menu -> "Add to Home Screen".');
+        }
+      };
+
+      useEffect(() => {
+        if (!savedKey || savedKey.length < 15) return;
+        const client = createClient(DEFAULT_SUPABASE_URL, savedKey.trim());
+        setSupabaseClient(client);
+
+        (async () => {
+          try {
+            await client.storage.createBucket('sofa_ops_store', { public: false }).catch(() => {});
+            const { data, error } = await client.storage.from('sofa_ops_store').download('db.json');
+            if (data) {
+              const parsed = JSON.parse(await data.text());
+              baseDbRef.current = parsed;
+              cloudReadyRef.current = true;
+              setDb(parsed);
+              localStorage.setItem('sg_cloud_db_cache', JSON.stringify(parsed));
+              setSyncStatus('Synced');
+            } else if (isNotFoundError(error)) {
+              baseDbRef.current = null;       // very first setup: no db.json yet
+              cloudReadyRef.current = true;
+              setSyncStatus('Ready');
+            } else {
+              setSyncStatus('OFFLINE - changes will not save');
+            }
+          } catch (e) { setSyncStatus('OFFLINE - changes will not save'); }
+        })();
+
+        const channel = client
+          .channel('sg-live-sync')
+          .on('broadcast', { event: 'db_update' }, ({ payload }) => {
+            if (payload) {
+              baseDbRef.current = payload;
+              setDb(payload);
+              localStorage.setItem('sg_cloud_db_cache', JSON.stringify(payload));
+              setSyncStatus('Live Synced');
+            }
+          })
+          .subscribe();
+
+        return () => client.removeChannel(channel);
+      }, [savedKey]);
+
+      const saveDb = (nextDb) => {
+        if (supabaseClient && !cloudReadyRef.current) {
+          alert('Server se connection nahi hua, isliye ye badlav SAVE NAHI hua. Internet check karke page refresh karo aur dobara koshish karo.');
+          return Promise.resolve();
+        }
+        setDb(nextDb);
+        localStorage.setItem('sg_cloud_db_cache', JSON.stringify(nextDb));
+        if (!supabaseClient) return Promise.resolve();
+        const run = async () => {
+          setSyncStatus('Saving...');
+          try {
+            const store = supabaseClient.storage.from('sofa_ops_store');
+            const { data: latestBlob, error: dErr } = await store.download('db.json');
+            let merged = nextDb;
+            if (latestBlob) {
+              merged = mergeDb(baseDbRef.current, nextDb, JSON.parse(await latestBlob.text()));
+            } else if (!isNotFoundError(dErr)) {
+              throw dErr || new Error('Could not read latest data');
+            }
+            const blob = new Blob([JSON.stringify(merged)], { type: 'application/json' });
+            const { error: uErr } = await store.upload('db.json', blob, { upsert: true });
+            if (uErr) throw uErr;
+            baseDbRef.current = merged;
+            setDb(merged);
+            localStorage.setItem('sg_cloud_db_cache', JSON.stringify(merged));
+            setSyncStatus('Saved');
+            supabaseClient.channel('sg-live-sync').send({ type: 'broadcast', event: 'db_update', payload: merged }).catch(() => {});
+          } catch (e) {
+            setSyncStatus('NOT SAVED - retry');
+            alert('Ye badlav server pe SAVE NAHI hua (internet/server problem). Please dobara koshish karo, aur jab tak "Saved" na dikhe tab tak page band mat karo.');
+          }
+        };
+        saveChainRef.current = saveChainRef.current.then(run, run);
+        return saveChainRef.current;
+      };
+
+      const handleLogin = (e) => {
+        e.preventDefault();
+        const expectedPin = db.settings?.pins?.[selectedRole] || '8866';
+        if (pin !== expectedPin) {
+          alert('Incorrect 4-digit PIN.');
+          return;
+        }
+        if (selectedRole === 'admin') {
+          const exists = db.devices.find((d) => d.fp === myFp);
+          if (!exists || exists.status !== 'approved') {
+            saveDb({ ...db, devices: [...db.devices.filter((d) => d.fp !== myFp), { fp: myFp, role: 'admin', status: 'approved' }] });
+          }
+        } else {
+          const exists = db.devices.find((d) => d.fp === myFp);
+          if (!exists) {
+            saveDb({ ...db, devices: [...db.devices, { fp: myFp, role: selectedRole, status: 'pending' }] });
+          }
+        }
+        sessionStorage.setItem('sg_active_role', selectedRole);
+        setCurrentRole(selectedRole);
+        setPin('');
+      };
+
+      if (!savedKey || savedKey.length < 15) {
+        return (
+          <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+            <div className="bg-white border border-gray-300 rounded-md p-6 max-w-md w-full shadow-sm space-y-4">
+              <div>
+                <h1 className="font-bold text-lg text-gray-900">Shree Gayatri Handloom House</h1>
+                <p className="text-xs text-gray-500">Sofa Cover Department — Initial Connection Setup</p>
+              </div>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const k = keyInput.trim() || 'LOCAL_DIRECT_MODE_KEY_12345';
+                  localStorage.setItem('sg_supabase_key', k);
+                  setSavedKey(k);
+                }}
+                className="space-y-3"
+              >
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Supabase Publishable Key</label>
+                  <input
+                    placeholder="sb_publishable_..."
+                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono"
+                    value={keyInput}
+                    onChange={(e) => setKeyInput(e.target.value)}
+                  />
+                </div>
+                <button className="w-full bg-amber-700 hover:bg-amber-800 text-white py-3 rounded font-bold text-sm min-h-[44px]">
+                  Connect & Open ERP
+                </button>
+              </form>
+            </div>
+          </div>
+        );
+      }
+
+      if (!currentRole) {
+        return (
+          <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+            <div className="bg-white border border-gray-300 rounded-md p-6 max-w-sm w-full shadow-sm space-y-5">
+              <div className="border-b border-gray-200 pb-3">
+                <h1 className="font-bold text-base text-gray-900">Shree Gayatri Handloom House</h1>
+                <p className="text-xs text-gray-500">Sofa Cover Dept — Staff Sign In</p>
+              </div>
+              <form onSubmit={handleLogin} className="space-y-3.5">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Department Role</label>
+                  <select
+                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-semibold bg-white"
+                    value={selectedRole}
+                    onChange={(e) => setSelectedRole(e.target.value)}
+                  >
+                    {ROLES.map((r) => (
+                      <option key={r.role} value={r.role}>{r.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">4-Digit PIN</label>
+                  <input
+                    type="password"
+                    maxLength={4}
+                    inputMode="numeric"
+                    placeholder="••••"
+                    className="w-full border border-gray-300 rounded px-3 py-2 text-center text-xl tracking-widest font-bold"
+                    value={pin}
+                    onChange={(e) => setPin(e.target.value)}
+                  />
+                </div>
+                <button className="w-full bg-gray-900 hover:bg-gray-800 text-white py-3 rounded font-bold text-sm min-h-[44px]">
+                  Sign In
+                </button>
+              </form>
+              <button onClick={triggerInstall} className="w-full border border-gray-300 hover:bg-gray-50 text-gray-700 py-2.5 rounded text-xs font-semibold min-h-[44px]">
+                Install App on Desktop / Mobile
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      const myDeviceRecord = db.devices.find((d) => d.fp === myFp);
+      if (currentRole !== 'admin' && myDeviceRecord?.status !== 'approved') {
+        return (
+          <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+            <div className="bg-white border border-gray-300 rounded-md p-6 max-w-sm w-full text-center space-y-4">
+              <h2 className="font-bold text-base text-gray-900">Device Authorization Required</h2>
+              <p className="text-xs text-gray-600">
+                Device ID: <strong className="font-mono">{myFp}</strong><br />
+                Ask the Owner (Admin) to approve this device in <strong>Shop Settings & Data</strong>.
+              </p>
+              <button
+                onClick={() => { sessionStorage.removeItem('sg_active_role'); setCurrentRole(null); }}
+                className="w-full bg-gray-900 text-white py-2.5 rounded text-xs font-bold min-h-[44px]"
+              >
+                Back to Sign In
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      if (['admin', 'sales'].includes(currentRole)) {
+        return (
+          <DesktopERPView
+            db={db}
+            saveDb={saveDb}
+            currentRole={currentRole}
+            savedKey={savedKey}
+            syncStatus={syncStatus}
+            triggerInstall={triggerInstall}
+            onLogout={() => { sessionStorage.removeItem('sg_active_role'); setCurrentRole(null); }}
+          />
+        );
+      }
+
+      return (
+        <div className="min-h-screen bg-gray-100">
+          <header className="bg-gray-900 text-white px-4 py-3 flex justify-between items-center sticky top-0 z-30">
+            <div>
+              <div className="font-bold text-sm">Shree Gayatri Handloom House</div>
+              <div className="text-xs text-amber-400 font-semibold uppercase">{currentRole.replace('_', ' ')} • {syncStatus}</div>
+            </div>
+            <button
+              onClick={() => { sessionStorage.removeItem('sg_active_role'); setCurrentRole(null); }}
+              className="bg-gray-800 border border-gray-700 px-3 py-2 rounded text-xs font-semibold min-h-[44px]"
+            >
+              Logout
+            </button>
+          </header>
+          <ShopFloorMobileView db={db} saveDb={saveDb} currentRole={currentRole} scannedOrderNo={scannedOrderNo} />
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
 </body>
 </html>

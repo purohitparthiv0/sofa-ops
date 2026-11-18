@@ -241,6 +241,117 @@
     }
     const calculateEstimate = calcEstimate;
 
+    // ---- ORDER LINES START (Seating / Back / Handle / Other: own design, rate, segments + width) ----
+    function newId() { return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'L' + Date.now() + Math.random().toString(36).slice(2, 7); }
+    function newLine(part) { return { id: newId(), part: part || 'Seating', other_name: '', design: '', unit: 'Inches', rate: '', pending: false, rows: [{ expr: '', wid: '' }] }; }
+
+    // "102+102+36", "24x4" (x or × = multiply), decimals allowed
+    function evalLen(expr) {
+      const cleaned = String(expr || '').toLowerCase().replace(/[×*]/g, 'x').replace(/\s*x\s*/g, 'x').replace(/[^0-9.x+,\s]/g, '');
+      let total = 0;
+      cleaned.split(/[+,\s]+/).forEach((term) => {
+        if (!term) return;
+        const factors = term.split('x').map((n) => parseFloat(n)).filter((n) => !isNaN(n));
+        if (factors.length) total += factors.reduce((a, b) => a * b, 1);
+      });
+      return Math.round(total * 100) / 100;
+    }
+
+    function cleanExpr(e) { return String(e || '').replace(/[+x×*,\s]+$/i, ''); }
+    function linePartName(l) { return l.part === 'Other' ? (l.other_name || 'Other') : l.part; }
+    function lineRowsText(l) {
+      return (l.rows || []).filter((r) => cleanExpr(r.expr)).map((r) => cleanExpr(r.expr) + (r.wid ? ' (W ' + r.wid + '")' : '')).join(' | ');
+    }
+
+    // Feet = ceil(inches / 3) / 4 (round UP to .25 ft, integer maths). Amount is rounded DOWN to whole rupees (as on the paper bills).
+    function calcLine(line) {
+      const unit = line.unit === 'Pcs' ? 'Pcs' : 'Inches';
+      const rate = Math.max(0, toInt(line.rate));
+      const rows = (line.rows || []).map((r) => ({ expr: cleanExpr(r.expr), wid: String(r.wid || '').trim(), value: evalLen(r.expr) }));
+      const raw = Math.round(rows.reduce((a, r) => a + r.value, 0) * 100) / 100;
+      let quarters = 0, qty = 0, qtyStr = '0', amount = 0;
+      if (unit === 'Inches') {
+        quarters = raw > 0 ? Math.ceil(Math.round(raw * 100) / 300) : 0;
+        qty = quarters / 4;
+        qtyStr = qty.toFixed(2);
+        amount = Math.floor((quarters * rate) / 4);
+      } else {
+        qty = raw;
+        qtyStr = String(raw);
+        amount = Math.floor(raw * rate);
+      }
+      const name = linePartName(line);
+      const rowsText = rows.filter((r) => r.expr).map((r) => r.expr + (r.wid ? ' (W ' + r.wid + '")' : '')).join(' | ');
+      const text = unit === 'Inches'
+        ? `${name}: ${rowsText || '0'} = ${raw} in = ${qtyStr} ft × Rs ${rate.toLocaleString('en-IN')} = Rs ${amount.toLocaleString('en-IN')}`
+        : `${name}: ${rowsText || '0'} = ${raw} pcs × Rs ${rate.toLocaleString('en-IN')} = Rs ${amount.toLocaleString('en-IN')}`;
+      return { id: line.id, part: line.part, other_name: line.other_name || '', name, design: String(line.design || '').trim(), unit, rate, pending: !!line.pending, rows, raw, quarters, qty, qtyStr, amount, text };
+    }
+
+    function calcOrderLines(form = {}) {
+      const lines = (form.lines || []).map(calcLine);
+      const visit = Math.max(0, toInt(form.visit_charge ?? form.visitCharge));
+      const advance = Math.max(0, toInt(form.advance_amount ?? form.advanceAmount));
+      const total = lines.reduce((a, l) => a + l.amount, 0) + visit;
+      const balance = total - advance;
+      const sum = (arr, f) => arr.reduce((a, l) => a + f(l), 0);
+      const seat = lines.filter((l) => l.part === 'Seating');
+      const back = lines.filter((l) => l.part === 'Back');
+      return {
+        lines,
+        total,
+        balance,
+        advanceInt: advance,
+        visitChargeInt: visit,
+        hasMeasure: lines.some((l) => l.raw > 0),
+        seatingInches: sum(seat, (l) => (l.unit === 'Inches' ? l.raw : 0)),
+        seatingFeet: sum(seat, (l) => (l.unit === 'Inches' ? l.qty : 0)),
+        backRaw: sum(back, (l) => l.raw),
+        backBillable: sum(back, (l) => l.qty),
+        summaryLine: `Estimate total: Rs ${total.toLocaleString('en-IN')} | Advance: Rs ${advance.toLocaleString('en-IN')} | Balance: Rs ${balance.toLocaleString('en-IN')}`
+      };
+    }
+
+    // Old-style fields (design_name, seating_segments, ...) are still filled so reports, Excel, search and older screens keep working.
+    function deriveLegacy(cl) {
+      const designs = [];
+      cl.forEach((l) => { if (l.design && !designs.includes(l.design)) designs.push(l.design); });
+      const seat = cl.filter((l) => l.part === 'Seating');
+      const back = cl.filter((l) => l.part === 'Back');
+      const segs = (arr) => arr.map((l) => l.rows.map((r) => r.expr).filter(Boolean).join('+')).filter(Boolean).join('+');
+      return {
+        design_name: designs.join(' + '),
+        seating_segments: segs(seat),
+        seating_rate: seat[0] ? seat[0].rate : 0,
+        back_unit: back[0] ? back[0].unit : 'Inches',
+        back_segments: segs(back),
+        back_rate: back[0] ? back[0].rate : 0
+      };
+    }
+    function storeLine(l) {
+      return { id: l.id, part: l.part, other_name: l.other_name, design: l.design, unit: l.unit, rate: l.rate, pending: l.pending, rows: l.rows.map((r) => ({ expr: r.expr, wid: r.wid })), raw: l.raw, qty: l.qty, amount: l.amount };
+    }
+
+    // Lines of any order: new orders have order.lines, older orders are read from the old fields.
+    function getOrderLines(order) {
+      if (!order) return [];
+      if (Array.isArray(order.lines) && order.lines.length) return order.lines;
+      const out = [];
+      if (order.seating_segments) out.push({ id: 's', part: 'Seating', design: order.design_name, unit: 'Inches', rate: order.seating_rate, rows: [{ expr: cleanExpr(order.seating_segments), wid: '' }], raw: order.seating_total_inches, qty: order.seating_feet });
+      if (order.back_segments) out.push({ id: 'b', part: 'Back', design: order.design_name, unit: order.back_unit || 'Inches', rate: order.back_rate, rows: [{ expr: cleanExpr(order.back_segments), wid: '' }], raw: order.back_total_raw, qty: order.back_billable_qty });
+      return out;
+    }
+    function linesToFormLines(order) {
+      const ls = getOrderLines(order);
+      if (!ls.length) return [newLine('Seating'), newLine('Back')];
+      return ls.map((l) => ({
+        id: newId(), part: l.part || 'Seating', other_name: l.other_name || '', design: l.design || '', unit: l.unit === 'Pcs' ? 'Pcs' : 'Inches',
+        rate: l.rate || '', pending: !!l.pending,
+        rows: (l.rows && l.rows.length ? l.rows : [{ expr: '', wid: '' }]).map((r) => ({ expr: r.expr || '', wid: r.wid || '' }))
+      }));
+    }
+    // ---- ORDER LINES END ----
+
     const WhatsAppService = {
       formatPhone(mobile) {
         const digits = String(mobile || '').replace(/\D/g, '');
@@ -477,10 +588,12 @@
       };
 
       const handleCopyCSV = () => {
-        const header = 'OrderNo,Design,Seating,Back,TotalPcs,Notes,PromisedDate';
-        const rows = ordersList.map((o) =>
-          `"${o.order_no}","${o.design_name}","${o.seating_segments} (${o.seating_feet}ft)","${o.back_segments} (${o.back_billable_qty} ${o.back_unit})","${o.total_pcs}","${(o.tailor_notes || '').replace(/"/g, '""')}","${formatDateDDMMYYYY(o.promised_date)}"`
-        );
+        const header = 'OrderNo,Design,Measurements,TotalPcs,Notes,PromisedDate';
+        const q = (v) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+        const rows = ordersList.map((o) => {
+          const meas = getOrderLines(o).map((l) => `${linePartName(l)}: ${lineRowsText(l)} (${Number(l.qty) || 0}${l.unit === 'Pcs' ? 'pcs' : 'ft'})${l.design && l.design !== o.design_name ? ' [' + l.design + ']' : ''}`).join(' ; ');
+          return [q(o.order_no), q(o.design_name), q(meas), q(o.total_pcs), q(o.tailor_notes || ''), q(formatDateDDMMYYYY(o.promised_date))].join(',');
+        });
         navigator.clipboard.writeText([header, ...rows].join('\n'));
         alert(`Copied ${ordersList.length} sticker row(s) as CSV.`);
       };
@@ -518,8 +631,12 @@
                       <img src={qrImgSrc} alt="QR" className="w-[9mm] h-[9mm]" />
                     </div>
                     <div className="text-[8.5px] space-y-0.5 my-0.5">
-                      <div><strong>S:</strong> {order.seating_segments} = <b>{order.seating_feet}ft</b></div>
-                      <div><strong>B:</strong> {order.back_segments} = <b>{order.back_billable_qty}{order.back_unit === 'Inches' ? 'ft' : 'pcs'}</b> ({order.total_pcs} pcs)</div>
+                      {getOrderLines(order).map((l, i) => (
+                        <div key={i}>
+                          <strong>{linePartName(l).charAt(0)}:</strong> {lineRowsText(l)} = <b>{Number(l.qty) || 0}{l.unit === 'Pcs' ? 'pcs' : 'ft'}</b>
+                          {l.design && l.design !== order.design_name ? ` [${l.design}]` : ''}{l.pending ? ' [PENDING]' : ''}
+                        </div>
+                      ))}
                       {order.tailor_notes && (
                         <div className="truncate italic border-t border-dashed border-gray-500 pt-0.5">
                           Note: {order.tailor_notes}
@@ -600,7 +717,7 @@
         if (!existingOrder) {
           const savedDraft = localStorage.getItem(draftKey);
           if (savedDraft) {
-            try { return JSON.parse(savedDraft); } catch (e) {}
+            try { const d = JSON.parse(savedDraft); if (!Array.isArray(d.lines)) d.lines = linesToFormLines(d); return d; } catch (e) {}
           }
         }
         return {
@@ -611,12 +728,7 @@
           measurement_source: existingOrder?.measurement_source || 'Customer brought',
           visit_staff_name: existingOrder?.visit_staff_name || '',
           visit_charge: existingOrder?.visit_charge || 0,
-          design_name: existingOrder?.design_name || '',
-          seating_segments: existingOrder?.seating_segments || '',
-          seating_rate: existingOrder?.seating_rate || '',
-          back_unit: existingOrder?.back_unit || 'Inches',
-          back_segments: existingOrder?.back_segments || '',
-          back_rate: existingOrder?.back_rate || '',
+          lines: existingOrder ? linesToFormLines(existingOrder) : [newLine('Seating'), newLine('Back')],
           tailor_notes: existingOrder?.tailor_notes || '',
           total_pcs: existingOrder?.total_pcs || '',
           advance_amount: existingOrder?.advance_amount || 0,
@@ -677,16 +789,43 @@
         }
       };
 
-      const calc = calcEstimate(form);
+      const calc = calcOrderLines(form);
+
+      const setLines = (fn) => setForm((f) => ({ ...f, lines: fn(f.lines) }));
+      const updateLine = (li, patch) => setLines((ls) => ls.map((l, i) => (i === li ? { ...l, ...patch } : l)));
+      const updateRow = (li, ri, patch) => setLines((ls) => ls.map((l, i) => (i === li ? { ...l, rows: l.rows.map((r, j) => (j === ri ? { ...r, ...patch } : r)) } : l)));
+      const addRow = (li) => setLines((ls) => ls.map((l, i) => {
+        if (i !== li) return l;
+        const last = l.rows[l.rows.length - 1];
+        return { ...l, rows: [...l.rows, { expr: '', wid: last ? last.wid : '' }] };
+      }));
+      const removeRow = (li, ri) => setLines((ls) => ls.map((l, i) => (i === li ? { ...l, rows: l.rows.length > 1 ? l.rows.filter((_, j) => j !== ri) : l.rows } : l)));
+      const addLine = (part) => setLines((ls) => [...ls, newLine(part)]);
+      const removeLine = (li) => setLines((ls) => (ls.length > 1 ? ls.filter((_, i) => i !== li) : ls));
+      const usedWidths = Array.from(new Set(form.lines.flatMap((l) => l.rows.map((r) => String(r.wid || '').trim())).filter(Boolean)));
+      const onExprEnter = (e, li, ri) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const val = e.target.value.trim();
+        if (val && !/[+x×*]$/i.test(val)) { updateRow(li, ri, { expr: val + '+' }); return; }
+        const focusables = Array.from(formRef.current.querySelectorAll('input:not([disabled]), select:not([disabled]), textarea:not([disabled])'));
+        const idx = focusables.indexOf(e.target);
+        if (idx > -1 && idx < focusables.length - 1) focusables[idx + 1].focus();
+      };
 
       const validateAndOpenReview = () => {
         setErrorMsg('');
-        if (!form.customer_name.trim() || form.mobile.length < 10 || !form.design_name.trim()) {
-          setErrorMsg('Please enter Customer Name, 10-digit Mobile Number, and Design Name.');
+        if (!form.customer_name.trim() || form.mobile.length < 10 || !calc.lines.some((l) => l.design)) {
+          setErrorMsg('Please enter Customer Name, 10-digit Mobile Number, and at least one Design Name.');
           return;
         }
-        if (!form.seating_segments.trim() || !form.salesman_name || !form.promised_date || !form.total_pcs) {
-          setErrorMsg('To confirm an order, Seating Measurements, Salesman, Promised Date, and Total Pieces are required.');
+        const noDesign = calc.lines.findIndex((l) => l.raw > 0 && !l.design);
+        if (noDesign > -1) {
+          setErrorMsg(`Line ${noDesign + 1} (${calc.lines[noDesign].name}): Design Name is missing.`);
+          return;
+        }
+        if (!calc.hasMeasure || !form.salesman_name || !form.promised_date || !form.total_pcs) {
+          setErrorMsg('To confirm an order, Measurements, Salesman, Promised Date, and Total Pieces are required.');
           return;
         }
         setReviewMode(true);
@@ -694,13 +833,15 @@
 
       const finalizeSave = (targetStatus, afterAction = 'none') => {
         setErrorMsg('');
-        if (!form.customer_name.trim() || !form.mobile.trim() || !form.design_name.trim()) {
-          setErrorMsg('Customer Name, Mobile Number, and Design Name are required.');
+        if (!form.customer_name.trim() || !form.mobile.trim() || !calc.lines.some((l) => l.design)) {
+          setErrorMsg('Customer Name, Mobile Number, and at least one Design Name are required.');
           return;
         }
         const nextStatus = targetStatus === 'Confirmed' ? 'Cutting Pending' : targetStatus;
         const payload = {
           ...form,
+          ...deriveLegacy(calc.lines),
+          lines: calc.lines.map(storeLine),
           seating_total_inches: calc.seatingInches,
           seating_feet: calc.seatingFeet,
           back_total_raw: calc.backRaw,
@@ -710,8 +851,6 @@
           balance_amount: calc.balance,
           total_pcs: parseInt(form.total_pcs) || 1,
           visit_charge: parseFloat(form.visit_charge) || 0,
-          seating_rate: parseFloat(form.seating_rate) || 0,
-          back_rate: parseFloat(form.back_rate) || 0,
           status: nextStatus
         };
         if (!existingOrder) localStorage.removeItem(draftKey);
@@ -747,8 +886,7 @@
                     setForm({
                       customer_name: '', mobile: '', address: '', home_delivery: false,
                       measurement_source: 'Customer brought', visit_staff_name: '', visit_charge: 0,
-                      design_name: '', seating_segments: '', seating_rate: '', back_unit: 'Inches',
-                      back_segments: '', back_rate: '', tailor_notes: '', total_pcs: '',
+                      lines: [newLine('Seating'), newLine('Back')], tailor_notes: '', total_pcs: '',
                       advance_amount: 0, payment_mode: 'Cash', salesman_name: salesmen[0] || '', promised_date: ''
                     });
                   }}
@@ -820,9 +958,7 @@
                         const prev = matchingPastOrders[0];
                         setForm((f) => ({
                           ...f,
-                          seating_segments: f.seating_segments || prev.seating_segments,
-                          back_unit: prev.back_unit || f.back_unit,
-                          back_segments: f.back_segments || prev.back_segments,
+                          lines: f.lines.some((l) => l.rows.some((r) => r.expr)) ? f.lines : linesToFormLines(prev).map((l) => ({ ...l, design: '', rate: '' })),
                           total_pcs: f.total_pcs || prev.total_pcs
                         }));
                       }}
@@ -915,16 +1051,6 @@
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
-                  <div className="md:col-span-2">
-                    <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Design / Fabric Name & Shade *</label>
-                    <input
-                      placeholder="e.g. Velvet Jacquard Beige 402"
-                      className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-                      value={form.design_name}
-                      onChange={(e) => setForm({ ...form, design_name: e.target.value })}
-                      onKeyDown={(e) => handleFieldKeyDown(e)}
-                    />
-                  </div>
                   <div>
                     <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Total Pieces (Pcs) *</label>
                     <input
@@ -939,110 +1065,180 @@
                   </div>
                 </div>
 
-                {/* Seating */}
-                <div className="bg-gray-50 border border-gray-200 rounded p-3 space-y-2.5">
-                  <div className="flex justify-between items-center gap-2">
-                    <span className="text-xs font-bold text-gray-800">SEATING SEGMENTS (Always Inches)</span>
-                    <button
-                      type="button"
-                      disabled={!canEditSpecs}
-                      onClick={() => setForm((f) => ({ ...f, seating_segments: f.seating_segments ? String(f.seating_segments).replace(/\+*$/, '') + '+' : '' }))}
-                      className="text-xs font-semibold px-3 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-100 min-h-[44px] md:min-h-0"
-                    >
-                      + Add segment
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div className="md:col-span-2">
-                      <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Segments in Inches (e.g. 88+99+66)</label>
-                      <input
-                        name="seating_segments"
-                        disabled={!canEditSpecs}
-                        placeholder="88+99+66"
-                        className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
-                        value={form.seating_segments}
-                        onChange={(e) => setForm((f) => ({ ...f, seating_segments: e.target.value }))}
-                        onKeyDown={(e) => handleFieldKeyDown(e, true)}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Rate per ft (₹)</label>
-                      <input
-                        disabled={!canEditSpecs}
-                        type="number"
-                        placeholder="200"
-                        className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
-                        value={form.seating_rate}
-                        onChange={(e) => setForm((f) => ({ ...f, seating_rate: e.target.value }))}
-                        onKeyDown={(e) => handleFieldKeyDown(e)}
-                      />
-                    </div>
-                  </div>
-                  <div className="text-xs md:text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2 tabular-nums">
-                    {calc.seatingLine}
-                  </div>
-                </div>
+                {form.lines.map((line, li) => {
+                  const lc = calc.lines[li];
+                  return (
+                    <div key={line.id} className="bg-gray-50 border border-gray-200 rounded p-3 space-y-2.5">
+                      <div className="flex flex-wrap justify-between items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-bold text-gray-800">LINE {li + 1}</span>
+                          <select
+                            disabled={!canEditSpecs}
+                            className="border border-gray-300 rounded px-2.5 py-1 text-xs font-semibold bg-white min-h-[44px] md:min-h-0"
+                            value={line.part}
+                            onChange={(e) => updateLine(li, { part: e.target.value })}
+                          >
+                            <option>Seating</option>
+                            <option>Back</option>
+                            <option>Handle</option>
+                            <option>Other</option>
+                          </select>
+                          {line.part === 'Other' && (
+                            <input
+                              disabled={!canEditSpecs}
+                              placeholder="Name (e.g. Cushion)"
+                              className="border border-gray-300 rounded px-2.5 py-1 text-xs bg-white min-h-[44px] md:min-h-0"
+                              value={line.other_name}
+                              onChange={(e) => updateLine(li, { other_name: e.target.value })}
+                            />
+                          )}
+                          <select
+                            disabled={!canEditSpecs}
+                            className="border border-gray-300 rounded px-2.5 py-1 text-xs font-semibold bg-white min-h-[44px] md:min-h-0"
+                            value={line.unit}
+                            onChange={(e) => updateLine(li, { unit: e.target.value })}
+                          >
+                            <option value="Inches">Inches</option>
+                            <option value="Pcs">Pcs</option>
+                          </select>
+                        </div>
+                        {form.lines.length > 1 && canEditSpecs && (
+                          <button type="button" onClick={() => removeLine(li)} className="text-xs font-semibold text-red-700 hover:underline px-2 py-2 min-h-[44px] md:min-h-0">
+                            Remove line
+                          </button>
+                        )}
+                      </div>
 
-                {/* Back */}
-                <div className="bg-gray-50 border border-gray-200 rounded p-3 space-y-2.5">
-                  <div className="flex flex-wrap justify-between items-center gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-gray-800">BACK SEGMENTS</span>
-                      <select
-                        disabled={!canEditSpecs}
-                        className="border border-gray-300 rounded px-2.5 py-1 text-xs font-semibold bg-white min-h-[44px] md:min-h-0"
-                        value={form.back_unit}
-                        onChange={(e) => setForm((f) => ({ ...f, back_unit: e.target.value }))}
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <div className="md:col-span-2">
+                          <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Design / Fabric Name & Shade *</label>
+                          <input
+                            disabled={!canEditSpecs}
+                            placeholder="e.g. Ronaldo Cream"
+                            className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100"
+                            value={line.design}
+                            onChange={(e) => updateLine(li, { design: e.target.value })}
+                            onKeyDown={(e) => handleFieldKeyDown(e)}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">
+                            {line.unit === 'Inches' ? 'Rate per ft (₹)' : 'Rate per pc (₹)'}
+                          </label>
+                          <input
+                            disabled={!canEditSpecs}
+                            type="number"
+                            placeholder="200"
+                            className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
+                            value={line.rate}
+                            onChange={(e) => updateLine(li, { rate: e.target.value })}
+                            onKeyDown={(e) => handleFieldKeyDown(e)}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        {line.rows.map((row, ri) => (
+                          <div key={ri} className="grid grid-cols-12 gap-2 items-end">
+                            <div className="col-span-7 md:col-span-8">
+                              {ri === 0 && (
+                                <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">
+                                  {line.unit === 'Inches' ? 'Length in inches (e.g. 102+102+36 or 24x4)' : 'Pieces (e.g. 2+2+3+5)'}
+                                </label>
+                              )}
+                              <input
+                                disabled={!canEditSpecs}
+                                placeholder={line.unit === 'Inches' ? '102+102+36' : '2+2+3'}
+                                className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
+                                value={row.expr}
+                                onChange={(e) => updateRow(li, ri, { expr: e.target.value })}
+                                onKeyDown={(e) => onExprEnter(e, li, ri)}
+                              />
+                            </div>
+                            <div className="col-span-4 md:col-span-3">
+                              {ri === 0 && <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">Width (in)</label>}
+                              <input
+                                disabled={!canEditSpecs}
+                                inputMode="decimal"
+                                placeholder="36"
+                                className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
+                                value={row.wid}
+                                onChange={(e) => updateRow(li, ri, { wid: e.target.value })}
+                                onKeyDown={(e) => handleFieldKeyDown(e)}
+                              />
+                            </div>
+                            <div className="col-span-1">
+                              {line.rows.length > 1 && canEditSpecs && (
+                                <button type="button" onClick={() => removeRow(li, ri)} className="w-full text-red-700 font-bold py-2 min-h-[44px] md:min-h-0" aria-label="Remove segment">×</button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={!canEditSpecs}
+                            onClick={() => addRow(li)}
+                            className="text-xs font-semibold px-3 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-100 min-h-[44px] md:min-h-0"
+                          >
+                            + Add segment
+                          </button>
+                          {usedWidths.length > 0 && canEditSpecs && (
+                            <span className="text-xs text-gray-500 inline-flex flex-wrap items-center gap-1.5">
+                              Width:
+                              {usedWidths.map((w) => (
+                                <button
+                                  key={w}
+                                  type="button"
+                                  onClick={() => {
+                                    const ri = line.rows.findIndex((r) => !r.wid);
+                                    updateRow(li, ri > -1 ? ri : line.rows.length - 1, { wid: w });
+                                  }}
+                                  className="px-2 py-1 bg-white border border-gray-300 rounded font-semibold text-gray-700 hover:bg-gray-100"
+                                >
+                                  {w}"
+                                </button>
+                              ))}
+                            </span>
+                          )}
+                          <label className="inline-flex items-center gap-2 text-xs font-semibold text-gray-700 cursor-pointer min-h-[44px] md:min-h-0">
+                            <input
+                              type="checkbox"
+                              disabled={!canEditSpecs}
+                              className="w-4 h-4 accent-amber-700"
+                              checked={!!line.pending}
+                              onChange={(e) => updateLine(li, { pending: e.target.checked })}
+                            />
+                            Measurement pending
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2 tabular-nums">
+                        {lc ? lc.text : ''}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {canEditSpecs && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-bold text-gray-600">Add line:</span>
+                    {['Seating', 'Back', 'Handle', 'Other'].map((pt) => (
+                      <button
+                        key={pt}
+                        type="button"
+                        onClick={() => addLine(pt)}
+                        className="text-xs font-semibold px-3 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-100 min-h-[44px] md:min-h-0"
                       >
-                        <option value="Inches">Inches</option>
-                        <option value="Pcs">Pcs</option>
-                      </select>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={!canEditSpecs}
-                      onClick={() => setForm((f) => ({ ...f, back_segments: f.back_segments ? String(f.back_segments).replace(/\+*$/, '') + '+' : '' }))}
-                      className="text-xs font-semibold px-3 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-100 min-h-[44px] md:min-h-0"
-                    >
-                      + Add segment
-                    </button>
+                        + {pt}
+                      </button>
+                    ))}
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div className="md:col-span-2">
-                      <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">
-                        {form.back_unit === 'Inches' ? 'Segments in Inches (e.g. 80+90+60)' : 'Segments in Pcs (e.g. 2+2+3+5)'}
-                      </label>
-                      <input
-                        name="back_segments"
-                        disabled={!canEditSpecs}
-                        placeholder={form.back_unit === 'Inches' ? '80+90+60' : '2+2+3+5'}
-                        className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
-                        value={form.back_segments}
-                        onChange={(e) => setForm((f) => ({ ...f, back_segments: e.target.value }))}
-                        onKeyDown={(e) => handleFieldKeyDown(e, true)}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-gray-600 mb-1 mobile-label">
-                        {form.back_unit === 'Inches' ? 'Rate per ft (₹)' : 'Rate per pc (₹)'}
-                      </label>
-                      <input
-                        disabled={!canEditSpecs}
-                        type="number"
-                        placeholder="200"
-                        className="w-full border border-gray-300 bg-white rounded px-3 py-2 text-sm disabled:bg-gray-100 tabular-nums"
-                        value={form.back_rate}
-                        onChange={(e) => setForm((f) => ({ ...f, back_rate: e.target.value }))}
-                        onKeyDown={(e) => handleFieldKeyDown(e)}
-                      />
-                    </div>
-                  </div>
-                  <div className="text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2 tabular-nums">
-                    {calc.backLine}
-                  </div>
-                  <div className="text-xs font-bold text-gray-900 bg-white border border-gray-300 rounded px-3 py-2 tabular-nums">
-                    {calc.summaryLine}
-                  </div>
+                )}
+
+                <div className="text-xs font-bold text-gray-900 bg-white border border-gray-300 rounded px-3 py-2 tabular-nums">
+                  {calc.summaryLine}
                 </div>
 
                 <div>
@@ -1068,14 +1264,12 @@
 
                 <table className="w-full text-sm tabular-nums">
                   <tbody className="divide-y divide-gray-200">
-                    <tr>
-                      <td className="py-2 text-gray-600">Seating ({calc.seatingFeetStr} ft × {formatINR(calc.seatingRateInt)})</td>
-                      <td className="py-2 text-right font-semibold text-gray-900">{formatINR(calc.seatingAmount)}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-gray-600">Back ({calc.backBillableStr} {form.back_unit === 'Inches' ? 'ft' : 'pcs'} × {formatINR(calc.backRateInt)})</td>
-                      <td className="py-2 text-right font-semibold text-gray-900">{formatINR(calc.backAmount)}</td>
-                    </tr>
+                    {calc.lines.filter((l) => l.raw > 0 || l.rate > 0).map((l) => (
+                      <tr key={l.id}>
+                        <td className="py-2 text-gray-600">{l.name} ({l.qtyStr} {l.unit === 'Inches' ? 'ft' : 'pcs'} × {formatINR(l.rate)})</td>
+                        <td className="py-2 text-right font-semibold text-gray-900">{formatINR(l.amount)}</td>
+                      </tr>
+                    ))}
                     {Number(form.visit_charge) > 0 && (
                       <tr>
                         <td className="py-2 text-gray-600">Measurement Visit Charge</td>
@@ -1132,7 +1326,7 @@
                   <>
                     <button
                       type="button"
-                      onClick={() => finalizeSave(form.seating_segments ? 'Estimate Given' : 'Measurement Pending', 'none')}
+                      onClick={() => finalizeSave(calc.hasMeasure ? 'Estimate Given' : 'Measurement Pending', 'none')}
                       className="w-full bg-white hover:bg-gray-100 text-gray-800 border border-gray-300 py-3 rounded font-semibold text-sm min-h-[44px]"
                     >
                       Save as Unconfirmed Estimate
@@ -1171,9 +1365,13 @@
 
                 <div className="bg-gray-50 border border-gray-200 rounded p-4 space-y-2 text-sm">
                   <div className="flex justify-between gap-2"><span className="text-gray-600">Customer:</span><strong className="text-right">{form.customer_name} ({form.mobile})</strong></div>
-                  <div className="flex justify-between gap-2"><span className="text-gray-600">Design & Pieces:</span><strong className="text-right">{form.design_name} — {form.total_pcs} Pcs</strong></div>
-                  <div className="flex justify-between gap-2"><span className="text-gray-600">Seating:</span><strong className="text-right">{form.seating_segments} ({calc.seatingFeetStr} ft)</strong></div>
-                  <div className="flex justify-between gap-2"><span className="text-gray-600">Back:</span><strong className="text-right">{form.back_segments} ({calc.backBillableStr} {form.back_unit})</strong></div>
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Pieces:</span><strong className="text-right">{form.total_pcs} Pcs</strong></div>
+                  {calc.lines.filter((l) => l.raw > 0 || l.design).map((l) => (
+                    <div key={l.id} className="flex justify-between gap-2">
+                      <span className="text-gray-600">{l.name}{l.design ? ` — ${l.design}` : ''}{l.pending ? ' (measurement pending)' : ''}:</span>
+                      <strong className="text-right">{l.qtyStr} {l.unit === 'Inches' ? 'ft' : 'pcs'} = {formatINR(l.amount)}</strong>
+                    </div>
+                  ))}
                   <div className="flex justify-between gap-2"><span className="text-gray-600">Promised Delivery:</span><strong className="text-right">{formatDateDDMMYYYY(form.promised_date)}</strong></div>
                   <div className="flex justify-between gap-2"><span className="text-gray-600">Salesman:</span><strong className="text-right">{form.salesman_name}</strong></div>
                   <div className="border-t border-gray-300 pt-2 flex flex-wrap justify-between gap-2 text-base tabular-nums">
@@ -1361,8 +1559,13 @@
                   </div>
 
                   <div className="bg-gray-50 border border-gray-200 rounded p-3 space-y-1.5 text-sm tabular-nums">
-                    <div><span className="text-gray-500 font-semibold">Seating:</span> <strong>{order.seating_segments}</strong> ({order.seating_feet} ft)</div>
-                    <div><span className="text-gray-500 font-semibold">Back:</span> <strong>{order.back_segments}</strong> ({order.back_billable_qty} {order.back_unit})</div>
+                    {getOrderLines(order).map((l, i) => (
+                      <div key={i}>
+                        <span className="text-gray-500 font-semibold">{linePartName(l)}:</span> <strong>{lineRowsText(l)}</strong> ({Number(l.qty) || 0} {l.unit === 'Pcs' ? 'pcs' : 'ft'})
+                        {l.design ? <span className="text-gray-600"> — {l.design}</span> : null}
+                        {l.pending ? <span className="text-red-700 font-bold"> — MEASUREMENT PENDING</span> : null}
+                      </div>
+                    ))}
                     {order.tailor_notes && (
                       <div className="pt-1.5 border-t border-gray-200 text-gray-900 font-medium">
                         <span className="text-red-700 font-bold">Note:</span> {order.tailor_notes}

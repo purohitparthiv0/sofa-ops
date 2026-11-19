@@ -2678,7 +2678,7 @@
 
         const nowIso = new Date().toISOString();
         const nextOrders = db.orders.map((o) =>
-          o.id === order.id ? { ...o, status: 'With Tailor', assigned_tailor: tailor, stage_changed_at: nowIso } : o
+          o.id === order.id ? { ...o, status: 'With Tailor', assigned_tailor: tailor, stage_changed_at: nowIso, updated_at: nowIso } : o
         );
         const nextActivity = [
           { id: crypto.randomUUID(), order_no: order.order_no, action: `Cutting completed -> Assigned to ${tailorLabel}`, role: currentRole, created_at: nowIso },
@@ -2692,7 +2692,7 @@
         const nowIso = new Date().toISOString();
         const rate = db.settings?.tailorRates?.[currentRole] || 150;
         const nextOrders = db.orders.map((o) =>
-          o.id === order.id ? { ...o, status: 'Silai Done', stage_changed_at: nowIso } : o
+          o.id === order.id ? { ...o, status: 'Silai Done', stage_changed_at: nowIso, updated_at: nowIso } : o
         );
         const nextPieceLogs = [
           {
@@ -3432,7 +3432,7 @@
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-300">
-                    {db.orders
+                    {activeOrders
                       .filter((o) => o.status !== 'Delivered' && (o.status === 'Ready' || getDueUrgency(o.promised_date, o.status)))
                       .map((o) => {
                         const urg = getDueUrgency(o.promised_date, o.status);
@@ -5074,10 +5074,39 @@
       { label: 'Tailor 2', role: 'tailor_2' }
     ];
 
-    // ---- SAFE SYNC HELPERS (merge my changes onto the latest cloud copy; never hard-delete) ----
+    // ---- SAFE SYNC HELPERS (bypass CDN cache + merge by timestamp; never revert newer status) ----
     function isNotFoundError(e) {
       if (!e) return false;
       return /404|not.?found/i.test(String(e.statusCode || e.status || '') + ' ' + String(e.message || '') + ' ' + String(e.error || ''));
+    }
+
+    async function downloadFreshDbJson(client) {
+      const store = client.storage.from('sofa_ops_store');
+      // Use a fresh signed URL + cache-buster timestamp so browser/CDN NEVER serves stale db.json
+      const { data: signed, error: sErr } = await store.createSignedUrl('db.json', 60);
+      if (!sErr && signed?.signedUrl) {
+        const sep = signed.signedUrl.includes('?') ? '&' : '?';
+        const resp = await fetch(`${signed.signedUrl}${sep}cb=${Date.now()}`, {
+          cache: 'no-store',
+          headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache' }
+        });
+        if (resp.status === 404 || resp.status === 400) {
+          const errText = await resp.text().catch(() => '');
+          if (/not.?found/i.test(errText)) return { parsed: null, notFound: true };
+          throw new Error(errText || `HTTP ${resp.status}`);
+        }
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return { parsed: await resp.json(), notFound: false };
+      }
+      // Fallback to direct download
+      const { data, error } = await store.download('db.json');
+      if (data) return { parsed: JSON.parse(await data.text()), notFound: false };
+      if (isNotFoundError(error)) return { parsed: null, notFound: true };
+      throw error || sErr || new Error('Could not read db.json');
+    }
+
+    function orderFreshnessTs(o) {
+      return String(o?.updated_at || o?.stage_changed_at || o?.created_at || '');
     }
 
     function mergeDb(base, local, cloud) {
@@ -5089,7 +5118,15 @@
         (local[key] || []).forEach((v) => {
           const k = idFn(v);
           const b = bm.get(k);
-          if (!b || !same(b, v)) out.set(k, v);
+          const cItem = out.get(k);
+          if (key === 'orders' && cItem) {
+            // Never let a stale cloud copy overwrite a newer local stage/edit, and vice versa
+            if (orderFreshnessTs(v) >= orderFreshnessTs(cItem)) {
+              out.set(k, v);
+            }
+          } else if (!b || !same(b, v)) {
+            out.set(k, v);
+          }
         });
         const arr = Array.from(out.values());
         if (tsField) arr.sort((a, b) => String(b[tsField] || '').localeCompare(String(a[tsField] || '')));
@@ -5188,24 +5225,24 @@
       const loadCloudDb = async (client) => {
         if (!client) return;
         try {
-          const { data, error } = await client.storage.from('sofa_ops_store').download('db.json');
-          if (data) {
-            const parsed = JSON.parse(await data.text());
+          const { parsed, notFound } = await downloadFreshDbJson(client);
+          if (parsed) {
             baseDbRef.current = parsed;
             cloudReadyRef.current = true;
             setDb(parsed);
             localStorage.setItem('sg_cloud_db_cache', JSON.stringify(parsed));
             setSyncStatus('Synced');
-          } else if (isNotFoundError(error)) {
+          } else if (notFound) {
             baseDbRef.current = null;
             cloudReadyRef.current = true;
             setSyncStatus('Ready');
-          } else {
-            // If storage RLS blocked download (403/400), device is NOT approved on server
-            setSyncStatus('Locked (Approval Needed)');
           }
         } catch (e) {
-          setSyncStatus('OFFLINE - changes will not save');
+          if (/403|unauthorized|policy|row-level/i.test(String(e?.message || ''))) {
+            setSyncStatus('Locked (Approval Needed)');
+          } else {
+            setSyncStatus('OFFLINE - changes will not save');
+          }
         }
       };
 
@@ -5269,15 +5306,19 @@
           setSyncStatus('Saving...');
           try {
             const store = supabaseClient.storage.from('sofa_ops_store');
-            const { data: latestBlob, error: dErr } = await store.download('db.json');
+            const { parsed: latestCloud, notFound } = await downloadFreshDbJson(supabaseClient);
             let merged = nextDb;
-            if (latestBlob) {
-              merged = mergeDb(baseDbRef.current, nextDb, JSON.parse(await latestBlob.text()));
-            } else if (!isNotFoundError(dErr)) {
-              throw dErr || new Error('Could not read latest data');
+            if (latestCloud) {
+              merged = mergeDb(baseDbRef.current, nextDb, latestCloud);
+            } else if (!notFound) {
+              throw new Error('Could not read latest data');
             }
             const blob = new Blob([JSON.stringify(merged)], { type: 'application/json' });
-            const { error: uErr } = await store.upload('db.json', blob, { upsert: true });
+            const { error: uErr } = await store.upload('db.json', blob, {
+              upsert: true,
+              cacheControl: '0',
+              contentType: 'application/json'
+            });
             if (uErr) throw uErr;
             baseDbRef.current = merged;
             setDb(merged);

@@ -56,10 +56,65 @@
     }
 
     @media print {
-      body * { visibility: hidden; }
-      #printable-area, #printable-area * { visibility: visible; }
-      #printable-area { position: fixed; left: 0; top: 0; width: 100%; margin: 0 !important; padding: 0 !important; box-shadow: none !important; background: #fff !important; }
+      @page {
+        size: 210mm 148mm;
+        margin: 5mm 6mm;
+      }
+      html, body {
+        background: #ffffff !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        width: 210mm !important;
+        height: auto !important;
+        overflow: visible !important;
+      }
       .no-print { display: none !important; }
+      body.printing-cut-slip #root {
+        display: none !important;
+      }
+      body.printing-cut-slip #cut-print-portal {
+        display: block !important;
+        width: 198mm !important;
+        margin: 0 auto !important;
+        background: #ffffff !important;
+      }
+      body:not(.printing-cut-slip) #cut-print-portal {
+        display: none !important;
+      }
+      body:not(.printing-cut-slip) * {
+        visibility: hidden;
+      }
+      body:not(.printing-cut-slip) #printable-area,
+      body:not(.printing-cut-slip) #printable-area * {
+        visibility: visible;
+      }
+      body:not(.printing-cut-slip) #printable-area {
+        position: static !important;
+        width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #ffffff !important;
+      }
+      .cut-print-sheet {
+        width: 198mm !important;
+        max-height: 136mm !important;
+        height: 136mm !important;
+        box-sizing: border-box !important;
+        page-break-after: always !important;
+        break-after: page !important;
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+        overflow: hidden !important;
+        border: 1.5px solid #000000 !important;
+        padding: 3.5mm 4.5mm !important;
+        margin: 0 !important;
+        background: #ffffff !important;
+        color: #000000 !important;
+      }
+      .cut-print-sheet:last-child {
+        page-break-after: auto !important;
+        break-after: auto !important;
+      }
     }
   </style>
 </head>
@@ -850,92 +905,159 @@
     }
 
     // =========================================================================
-    // STICKER PRINT MODAL (Single & Batch Print with Reprint Logging)
+    // CUTTING SLIP / CUT PRINT MODAL (Half-A4 210mm x 148mm + Direct Printer Fix)
     // =========================================================================
-    function StickerPrintModal({ ordersList, settings, onClose, onLogReprint }) {
-      const w = settings?.sticker_width_mm || 60;
-      const h = settings?.sticker_height_mm || 40;
+    function renderCuttingSlipSheet(order) {
+      const qrUrl = `${window.location.origin}${window.location.pathname}?scan=${order.order_no}`;
+      const qrImgSrc = `https://api.qrserver.com/v1/create-qr-code/?size=120x120&margin=0&data=${encodeURIComponent(qrUrl)}`;
+      const lines = getOrderLines(order);
+      return (
+        <div
+          key={order.id}
+          className="cut-print-sheet bg-white border-2 border-black text-black flex flex-col justify-between mx-auto"
+          style={{ width: '198mm', height: '136mm', padding: '3.5mm 4.5mm', boxSizing: 'border-box' }}
+        >
+          {/* Prominent Order Number Header */}
+          <div>
+            <div className="flex justify-between items-center border-b-2 border-black pb-1.5 mb-1.5">
+              <div className="flex items-baseline gap-3">
+                <span className="font-black text-2xl tracking-tight leading-none uppercase">
+                  Order #{String(order.order_no || '').replace(/^SC-/i, 'SC-')}
+                </span>
+                <span className="text-xs font-bold uppercase px-1.5 py-0.5 border border-black">
+                  {order.order_type || 'Sofa Cover'}
+                </span>
+              </div>
+              <div className="flex items-center gap-2.5 text-right">
+                <div className="text-[11px] leading-tight">
+                  <div className="font-bold">SHREE GAYATRI FURNISHING HUB — CUTTING SLIP</div>
+                  <div>Order Date: <strong>{formatDateDDMMYYYY(order.created_at)}</strong> • Delivery Due: <strong className="underline">{formatDateDDMMYYYY(order.promised_date)}</strong></div>
+                </div>
+                <img src={qrImgSrc} alt="QR" style={{ width: '11mm', height: '11mm' }} />
+              </div>
+            </div>
 
-      const handlePrint = () => {
-        const style = document.createElement('style');
-        style.innerHTML = `@page { size: ${w}mm ${h}mm; margin: 0; }`;
-        document.head.appendChild(style);
+            {/* Customer & Job Summary Row */}
+            <div className="grid grid-cols-4 gap-2 border border-black px-2 py-1 text-[11px] mb-1.5 bg-gray-50">
+              <div className="col-span-2 truncate">Customer: <strong>{order.customer_name}</strong> ({order.mobile})</div>
+              <div>Total Pcs: <strong className="text-sm">{order.total_pcs} PCS</strong></div>
+              <div className="text-right truncate">Salesman: <strong>{order.salesman_name || '—'}</strong></div>
+            </div>
+
+            {/* Compact Measurements & Pieces Table (10px-12px readable font, fits inside 138mm height) */}
+            <table className="w-full border-collapse border border-black text-[11px] leading-tight">
+              <thead>
+                <tr className="bg-gray-100 border-b border-black">
+                  <th className="border-r border-black px-1.5 py-1 text-left w-[18%]">Part / Item</th>
+                  <th className="border-r border-black px-1.5 py-1 text-left w-[26%]">Fabric / Design</th>
+                  <th className="border-r border-black px-1.5 py-1 text-left w-[42%]">Measurements / Size / Sample</th>
+                  <th className="px-1.5 py-1 text-right w-[14%]">Cut Qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((l, idx) => {
+                  const unitLbl = l.unit === 'Pcs' ? 'pcs' : l.unit === 'Meter' ? 'mtr' : 'ft';
+                  return (
+                    <tr key={idx} className="border-b border-black">
+                      <td className="border-r border-black px-1.5 py-1 font-bold">
+                        {linePartName(l)}{l.pending ? ' [PENDING]' : ''}
+                      </td>
+                      <td className="border-r border-black px-1.5 py-1 font-semibold">
+                        {l.design || order.design_name || '—'}
+                      </td>
+                      <td className="border-r border-black px-1.5 py-1">
+                        {lineRowsText(l) || '—'}
+                      </td>
+                      <td className="px-1.5 py-1 text-right font-bold">
+                        {Number(l.qty) || 0} {unitLbl}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Cutting & Tailor Instructions + Sign-off Footer */}
+          <div className="space-y-1 pt-1">
+            <div className="border border-black px-2 py-1 text-[11px] min-h-[11mm]">
+              <strong>Cutting / Tailor Instructions:</strong>{' '}
+              <span>{order.tailor_notes || 'Standard finishing as per shop specification.'}</span>
+            </div>
+            <div className="flex justify-between items-center text-[10px] font-bold pt-0.5">
+              <span>Status: {order.status} {order.assigned_tailor ? `(${order.assigned_tailor.replace('_', ' ').toUpperCase()})` : ''}</span>
+              <span>Cutting Master Sign: __________________</span>
+              <span>Tailor Sign: __________________</span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function StickerPrintModal({ ordersList, settings, onClose, onLogReprint }) {
+      const handleDirectPrint = () => {
         ordersList.forEach((ord) => onLogReprint && onLogReprint(ord));
-        window.print();
-        document.head.removeChild(style);
+
+        // Populate dedicated top-level #cut-print-portal outside #root so ALL browsers/printers detect it cleanly
+        let portal = document.getElementById('cut-print-portal');
+        if (!portal) {
+          portal = document.createElement('div');
+          portal.id = 'cut-print-portal';
+          document.body.appendChild(portal);
+        }
+        const previewContainer = document.getElementById('cut-slip-preview-list');
+        if (previewContainer) {
+          portal.innerHTML = previewContainer.innerHTML;
+        }
+
+        document.body.classList.add('printing-cut-slip');
+        const cleanup = () => {
+          document.body.classList.remove('printing-cut-slip');
+          window.removeEventListener('afterprint', cleanup);
+        };
+        window.addEventListener('afterprint', cleanup);
+
+        // Small frame delay ensures DOM & images are painted before OS print dialog opens
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            window.print();
+          }, 120);
+        });
       };
 
       const handleCopyCSV = () => {
         const header = 'OrderNo,Design,Measurements,TotalPcs,Notes,PromisedDate';
         const q = (v) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
         const rows = ordersList.map((o) => {
-          const meas = getOrderLines(o).map((l) => `${linePartName(l)}: ${lineRowsText(l)} (${Number(l.qty) || 0}${l.unit === 'Pcs' ? 'pcs' : 'ft'})${l.design && l.design !== o.design_name ? ' [' + l.design + ']' : ''}`).join(' ; ');
+          const meas = getOrderLines(o).map((l) => `${linePartName(l)}: ${lineRowsText(l)} (${Number(l.qty) || 0}${l.unit === 'Pcs' ? 'pcs' : l.unit === 'Meter' ? 'mtr' : 'ft'})${l.design && l.design !== o.design_name ? ' [' + l.design + ']' : ''}`).join(' ; ');
           return [q(o.order_no), q(o.design_name), q(meas), q(o.total_pcs), q(o.tailor_notes || ''), q(formatDateDDMMYYYY(o.promised_date))].join(',');
         });
         navigator.clipboard.writeText([header, ...rows].join('\n'));
-        alert(`Copied ${ordersList.length} sticker row(s) as CSV.`);
+        alert(`Copied ${ordersList.length} cutting slip row(s) as CSV.`);
       };
 
       return (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-md border border-gray-300 max-w-lg w-full p-4 md:p-5 shadow-lg">
-            <div className="flex justify-between items-center border-b border-gray-200 pb-3 mb-4">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-3 no-print">
+          <div className="bg-white rounded-md border border-gray-300 max-w-4xl w-full p-4 md:p-5 shadow-lg">
+            <div className="flex justify-between items-center border-b border-gray-200 pb-3 mb-3">
               <div>
                 <h3 className="font-bold text-base text-gray-900">
-                  {ordersList.length > 1 ? `Batch Cutting Stickers (${ordersList.length} Orders)` : `Cutting Sticker — ${ordersList[0].order_no}`}
+                  {ordersList.length > 1 ? `Batch Cutting Slips (${ordersList.length} Orders)` : `Cutting Slip — ${ordersList[0].order_no}`}
                 </h3>
-                <p className="text-xs text-gray-500">Label size: {w} × {h} mm • Thermal / PDF ready</p>
+                <p className="text-xs text-gray-500">Half-A4 Format (210mm × 148mm) • Fits top half of A4 sheet with zero page overflow</p>
               </div>
               <button onClick={onClose} className="p-2 min-w-[44px] min-h-[44px] text-gray-500 hover:bg-gray-100 rounded inline-flex items-center justify-center">
                 <Icon name="X" size={18} />
               </button>
             </div>
 
-            <div id="printable-area" className="max-h-80 overflow-y-auto bg-gray-100 p-4 rounded border border-gray-200 space-y-3 mb-4">
-              {ordersList.map((order) => {
-                const qrUrl = `${window.location.origin}${window.location.pathname}?scan=${order.order_no}`;
-                const qrImgSrc = `https://api.qrserver.com/v1/create-qr-code/?size=140x140&margin=0&data=${encodeURIComponent(qrUrl)}`;
-                return (
-                  <div
-                    key={order.id}
-                    style={{ width: `${w}mm`, height: `${h}mm`, pageBreakAfter: 'always' }}
-                    className="bg-white border border-black p-1.5 flex flex-col justify-between text-black leading-tight overflow-hidden mx-auto"
-                  >
-                    <div className="flex justify-between items-start border-b border-black pb-0.5">
-                      <div>
-                        <div className="font-bold text-sm tracking-tight">{order.order_no}</div>
-                        <div className="text-[9px] font-semibold truncate max-w-[34mm]">{order.design_name}</div>
-                      </div>
-                      <img src={qrImgSrc} alt="QR" className="w-[9mm] h-[9mm]" />
-                    </div>
-                    <div className="text-[8.5px] space-y-0.5 my-0.5">
-                      {order.order_type && order.order_type !== 'Sofa Cover' && (
-                        <div className="font-bold uppercase text-[8px]">TYPE: {order.order_type}</div>
-                      )}
-                      {getOrderLines(order).map((l, i) => (
-                        <div key={i}>
-                          <strong>{linePartName(l).slice(0, 3)}:</strong> {lineRowsText(l)} = <b>{Number(l.qty) || 0}{l.unit === 'Pcs' ? 'pcs' : l.unit === 'Meter' ? 'mtr' : 'ft'}</b>
-                          {l.design && l.design !== order.design_name ? ` [${l.design}]` : ''}{l.pending ? ' [PENDING]' : ''}
-                        </div>
-                      ))}
-                      {order.tailor_notes && (
-                        <div className="truncate italic border-t border-dashed border-gray-500 pt-0.5">
-                          Note: {order.tailor_notes}
-                        </div>
-                      )}
-                    </div>
-                    <div className="text-[8px] font-bold border-t border-black pt-0.5 flex justify-between">
-                      <span>DEL: {formatDateDDMMYYYY(order.promised_date)}</span>
-                      <span>PCS: {order.total_pcs}</span>
-                    </div>
-                  </div>
-                );
-              })}
+            <div id="cut-slip-preview-list" className="max-h-[62vh] overflow-auto bg-gray-100 p-3 rounded border border-gray-200 space-y-4 mb-4">
+              {ordersList.map((order) => renderCuttingSlipSheet(order))}
             </div>
 
             <div className="flex flex-col sm:flex-row gap-2">
-              <button onClick={handlePrint} className="flex-1 bg-amber-700 hover:bg-amber-800 text-white py-2.5 px-4 rounded font-semibold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]">
-                <Icon name="Printer" size={16} /> Print {ordersList.length > 1 ? `All (${ordersList.length})` : 'Sticker'}
+              <button onClick={handleDirectPrint} className="flex-1 bg-amber-700 hover:bg-amber-800 text-white py-2.5 px-4 rounded font-bold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]">
+                <Icon name="Printer" size={16} /> Print Cutting Slip {ordersList.length > 1 ? `(${ordersList.length})` : '(Half-A4)'}
               </button>
               <button onClick={handleCopyCSV} className="border border-gray-300 hover:bg-gray-50 text-gray-800 py-2.5 px-4 rounded font-semibold text-sm inline-flex items-center justify-center gap-2 min-h-[44px]">
                 <Icon name="Copy" size={16} /> Copy CSV
@@ -1637,7 +1759,7 @@
     // =========================================================================
     function OrderEntryScreen({ existingOrder, allOrders, salesmen, currentRole, orderNotes = [], onCancel, onCommitOrder }) {
       const isConfirmed = existingOrder && !['Measurement Pending', 'Estimate Given'].includes(existingOrder.status);
-      const canEditSpecs = !isConfirmed || currentRole === 'admin';
+      const canEditSpecs = !isConfirmed || ['admin', 'sales'].includes(currentRole);
 
       const draftKey = existingOrder ? `sg_draft_${existingOrder.id}` : 'sg_draft_new_order';
 
@@ -3636,6 +3758,76 @@
       const [undoState, setUndoState] = useState(null);
       const [serverDevices, setServerDevices] = useState([]);
       const [loadingDevices, setLoadingDevices] = useState(false);
+      const [notifDropdownOpen, setNotifDropdownOpen] = useState(false);
+      const [sqlNotifs, setSqlNotifs] = useState([]);
+
+      // Subscribe to Supabase Realtime on admin_notifications (for Admin)
+      useEffect(() => {
+        if (!isAdmin || !supabaseClient || savedKey === 'LOCAL_DIRECT_MODE_KEY_12345') return;
+        let cancelled = false;
+        (async () => {
+          const { data, error } = await supabaseClient
+            .from('admin_notifications')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(40);
+          if (!cancelled && !error && Array.isArray(data)) setSqlNotifs(data);
+        })();
+
+        const notifChannel = supabaseClient
+          .channel('sg-admin-notifications')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'admin_notifications' },
+            (payload) => {
+              if (payload.eventType === 'INSERT' && payload.new) {
+                setSqlNotifs((prev) => [payload.new, ...prev.filter((x) => x.id !== payload.new.id)]);
+              } else if (payload.eventType === 'UPDATE' && payload.new) {
+                setSqlNotifs((prev) => prev.map((x) => (x.id === payload.new.id ? payload.new : x)));
+              }
+            }
+          )
+          .subscribe();
+
+        return () => {
+          cancelled = true;
+          supabaseClient.removeChannel(notifChannel);
+        };
+      }, [isAdmin, supabaseClient, savedKey]);
+
+      const mergedAdminNotifications = useMemo(() => {
+        const map = new Map();
+        (db.admin_notifications || []).forEach((n) => map.set(n.id, n));
+        (sqlNotifs || []).forEach((n) => map.set(n.id, { ...(map.get(n.id) || {}), ...n }));
+        return Array.from(map.values()).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+      }, [db.admin_notifications, sqlNotifs]);
+
+      const unreadNotifCount = useMemo(
+        () => mergedAdminNotifications.filter((n) => !n.is_read).length,
+        [mergedAdminNotifications]
+      );
+
+      const handleMarkNotificationRead = async (notif) => {
+        if (!notif) return;
+        const nextNotifs = (db.admin_notifications || []).map((n) => (n.id === notif.id ? { ...n, is_read: true } : n));
+        if (!(db.admin_notifications || []).some((n) => n.id === notif.id)) {
+          nextNotifs.unshift({ ...notif, is_read: true });
+        }
+        setSqlNotifs((prev) => prev.map((n) => (n.id === notif.id ? { ...n, is_read: true } : n)));
+        saveDb({ ...db, admin_notifications: nextNotifs });
+        if (supabaseClient && savedKey !== 'LOCAL_DIRECT_MODE_KEY_12345') {
+          supabaseClient.from('admin_notifications').update({ is_read: true }).eq('id', notif.id).then(() => {}).catch(() => {});
+        }
+      };
+
+      const handleMarkAllNotificationsRead = async () => {
+        const nextNotifs = mergedAdminNotifications.map((n) => ({ ...n, is_read: true }));
+        setSqlNotifs((prev) => prev.map((n) => ({ ...n, is_read: true })));
+        saveDb({ ...db, admin_notifications: nextNotifs });
+        if (supabaseClient && savedKey !== 'LOCAL_DIRECT_MODE_KEY_12345') {
+          supabaseClient.from('admin_notifications').update({ is_read: true }).eq('is_read', false).then(() => {}).catch(() => {});
+        }
+      };
 
       // Ctrl+K Global Search Modal
       const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
@@ -3714,9 +3906,36 @@
         let nextOrders;
         let nextSeq = db.nextOrderSeq || 1;
 
+        let salesEditNotification = null;
         if (editingOrder) {
-          savedOrder = { ...editingOrder, ...payload, stage_changed_at: nowIso };
+          savedOrder = { ...editingOrder, ...payload, stage_changed_at: nowIso, updated_at: nowIso };
           nextOrders = db.orders.map((o) => (o.id === editingOrder.id ? savedOrder : o));
+
+          if (currentRole === 'sales') {
+            const changes = [];
+            if ((editingOrder.customer_name || '') !== (savedOrder.customer_name || '')) changes.push('customer name');
+            if ((editingOrder.mobile || '') !== (savedOrder.mobile || '')) changes.push('mobile');
+            if ((editingOrder.address || '') !== (savedOrder.address || '')) changes.push('address');
+            if ((editingOrder.design_name || '') !== (savedOrder.design_name || '')) changes.push('fabric/design');
+            if (Number(editingOrder.total_pcs || 0) !== Number(savedOrder.total_pcs || 0)) changes.push(`pieces (${editingOrder.total_pcs}→${savedOrder.total_pcs})`);
+            if (JSON.stringify(editingOrder.lines || []) !== JSON.stringify(savedOrder.lines || [])) changes.push('items/measurements');
+            if (Number(editingOrder.estimate_total || 0) !== Number(savedOrder.estimate_total || 0)) changes.push(`total (${formatINR(editingOrder.estimate_total)}→${formatINR(savedOrder.estimate_total)})`);
+            if (Number(editingOrder.advance_amount || 0) !== Number(savedOrder.advance_amount || 0)) changes.push(`advance (${formatINR(editingOrder.advance_amount)}→${formatINR(savedOrder.advance_amount)})`);
+            if ((editingOrder.promised_date || '') !== (savedOrder.promised_date || '')) changes.push('delivery date');
+            if ((editingOrder.tailor_notes || '') !== (savedOrder.tailor_notes || '')) changes.push('notes');
+            const editorName = savedOrder.salesman_name || 'Sales Counter';
+            const diffText = changes.length ? changes.join(' / ') : 'order details';
+            salesEditNotification = {
+              id: crypto.randomUUID(),
+              order_id: savedOrder.id,
+              order_number: savedOrder.order_no,
+              edited_by_name: editorName,
+              edited_by_role: 'sales',
+              summary: `Sales (${editorName}) updated ${savedOrder.order_no}: Changed ${diffText}`,
+              is_read: false,
+              created_at: nowIso
+            };
+          }
         } else {
           const orderNo = 'SC-' + String(nextSeq).padStart(4, '0');
           nextSeq += 1;
@@ -3765,7 +3984,13 @@
           if (!alreadyHas) pushNote('Measurement pending on one or more lines', 'Urgent');
         }
 
-        saveDb({ ...db, nextOrderSeq: nextSeq, orders: nextOrders, activityLogs: nextActivity, notes: [...addedNotes, ...existingNotes] });
+        const nextAdminNotifs = salesEditNotification
+          ? [salesEditNotification, ...(db.admin_notifications || [])]
+          : (db.admin_notifications || []);
+        if (salesEditNotification && supabaseClient && savedKey !== 'LOCAL_DIRECT_MODE_KEY_12345') {
+          supabaseClient.from('admin_notifications').insert([salesEditNotification]).then(() => {}).catch(() => {});
+        }
+        saveDb({ ...db, nextOrderSeq: nextSeq, orders: nextOrders, activityLogs: nextActivity, notes: [...addedNotes, ...existingNotes], admin_notifications: nextAdminNotifs });
         setEditingOrder(null);
         setActiveNav('orders');
 
@@ -3853,14 +4078,52 @@
       };
 
       const handleStatusChange = (order, newStatus) => {
-        if (!confirm(`Change status of ${order.order_no} (${order.customer_name}) to "${newStatus}"?`)) return;
+        const isDelivering = String(newStatus).toLowerCase() === 'delivered';
+        if (isDelivering && !isAdmin) {
+          alert('Only Admin can mark an order as Delivered.');
+          return;
+        }
+        const confirmMsg = isDelivering
+          ? `Mark ${order.order_no} (${order.customer_name}) as Delivered? Balance due (${formatINR(order.balance_amount)}) will automatically be cleared to ₹0.`
+          : `Change status of ${order.order_no} (${order.customer_name}) to "${newStatus}"?`;
+        if (!confirm(confirmMsg)) return;
+
         const nowIso = new Date().toISOString();
-        const nextOrders = db.orders.map((o) => (o.id === order.id ? { ...o, status: newStatus, stage_changed_at: nowIso } : o));
+        const totalAmt = Number(order.estimate_total) || 0;
+        const nextOrders = db.orders.map((o) => {
+          if (o.id !== order.id) return o;
+          if (isDelivering) {
+            return {
+              ...o,
+              status: 'Delivered',
+              balance_amount: 0,
+              advance_amount: totalAmt,
+              paid_amount: totalAmt,
+              delivered_at: nowIso,
+              stage_changed_at: nowIso,
+              updated_at: nowIso
+            };
+          }
+          return { ...o, status: newStatus, stage_changed_at: nowIso, updated_at: nowIso };
+        });
+
         const nextActivity = [
-          { id: crypto.randomUUID(), order_no: order.order_no, action: `Status changed to ${newStatus}`, role: currentRole, created_at: nowIso },
+          {
+            id: crypto.randomUUID(),
+            order_no: order.order_no,
+            action: isDelivering
+              ? `Order marked as Delivered & Balance cleared to ₹0 (Full ${formatINR(totalAmt)} settled)`
+              : `Status changed to ${newStatus}`,
+            role: currentRole,
+            created_at: nowIso
+          },
           ...db.activityLogs
         ];
-        triggerUndoableChange(db, { ...db, orders: nextOrders, activityLogs: nextActivity }, `${order.order_no} marked ${newStatus}`);
+
+        const toastMsg = isDelivering
+          ? 'Order marked as Delivered & Balance cleared to ₹0'
+          : `${order.order_no} marked ${newStatus}`;
+        triggerUndoableChange(db, { ...db, orders: nextOrders, activityLogs: nextActivity }, toastMsg);
       };
 
       const handleLogStickerReprint = (order) => {
@@ -3927,8 +4190,10 @@
       const trashedOrders = useMemo(() => db.orders.filter((o) => o.is_trashed), [db.orders]);
 
       // Counter Queue Counters (active orders only)
+      const isPendingProductionStatus = (st) => !['Measurement Pending', 'Estimate Given', 'Ready', 'Delivered', 'Cancelled'].includes(st);
+      const pendingOrdersCount = activeOrders.filter((o) => isPendingProductionStatus(o.status)).length;
       const readyForDeliveryCount = activeOrders.filter((o) => o.status === 'Ready').length;
-      const balanceDueCount = activeOrders.filter((o) => !['Measurement Pending', 'Estimate Given'].includes(o.status) && Number(o.balance_amount) > 0).length;
+      const balanceDueCount = activeOrders.filter((o) => !['Measurement Pending', 'Estimate Given', 'Cancelled'].includes(o.status) && Number(o.balance_amount) > 0).length;
       const stuckOrdersList = activeOrders.filter((o) => {
         const limit = db.settings?.stageAlertHours?.[o.status];
         return limit && getHoursInStage(o) > limit;
@@ -3945,8 +4210,9 @@
             return false;
           }
           if (activeNav === 'orders') {
+            if (queueFilter === 'PENDING') return isPendingProductionStatus(o.status);
             if (queueFilter === 'READY_DELIVERY') return o.status === 'Ready';
-            if (queueFilter === 'BALANCE_DUE') return !['Measurement Pending', 'Estimate Given'].includes(o.status) && Number(o.balance_amount) > 0;
+            if (queueFilter === 'BALANCE_DUE') return !['Measurement Pending', 'Estimate Given', 'Cancelled'].includes(o.status) && Number(o.balance_amount) > 0;
             if (queueFilter === 'STUCK') {
               const limit = db.settings?.stageAlertHours?.[o.status];
               return limit && getHoursInStage(o) > limit;
@@ -4010,7 +4276,17 @@
               }`}
             >
               <span className="inline-flex items-center gap-2.5"><Icon name="ListOrdered" size={16} /> All Orders</span>
-              <span className="text-xs opacity-80 tabular-nums">{activeOrders.length}</span>
+              <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-gray-200 text-gray-800 tabular-nums">{activeOrders.length}</span>
+            </button>
+
+            <button
+              onClick={() => selectPage('orders', 'PENDING')}
+              className={`w-full text-left px-3 py-2.5 rounded text-sm font-medium flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                activeNav === 'orders' && queueFilter === 'PENDING' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              <span className="inline-flex items-center gap-2.5"><Icon name="Scissors" size={16} /> Pending Orders</span>
+              <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 tabular-nums">{pendingOrdersCount}</span>
             </button>
 
             <button
@@ -4019,7 +4295,7 @@
                 activeNav === 'orders' && queueFilter === 'READY_DELIVERY' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
               }`}
             >
-              <span className="inline-flex items-center gap-2.5"><Icon name="PackageCheck" size={16} /> Ready for Delivery</span>
+              <span className="inline-flex items-center gap-2.5"><Icon name="PackageCheck" size={16} /> Ready to Deliver</span>
               <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 tabular-nums">{readyForDeliveryCount}</span>
             </button>
 
@@ -4040,7 +4316,7 @@
               }`}
             >
               <span className="inline-flex items-center gap-2.5"><Icon name="Clock" size={16} /> Unconfirmed</span>
-              <span className="text-xs opacity-80 tabular-nums">{unconfirmedCount}</span>
+              <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-gray-200 text-gray-800 tabular-nums">{unconfirmedCount}</span>
             </button>
 
             {stuckOrdersList.length > 0 && (
@@ -4156,6 +4432,76 @@
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
+              {/* Admin-Only Real-Time Notification Bell */}
+              {isAdmin && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    aria-label="Admin Notifications"
+                    onClick={() => setNotifDropdownOpen((v) => !v)}
+                    className="relative p-2 min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:px-2.5 md:py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 rounded inline-flex items-center justify-center"
+                  >
+                    <Icon name="Bell" size={17} />
+                    {unreadNotifCount > 0 && (
+                      <span className="absolute -top-1.5 -right-1.5 bg-red-600 text-white text-[10px] font-bold px-1.5 py-0.2 rounded-full tabular-nums leading-tight">
+                        {unreadNotifCount}
+                      </span>
+                    )}
+                  </button>
+
+                  {notifDropdownOpen && (
+                    <div className="fixed sm:absolute right-2 sm:right-0 left-2 sm:left-auto mt-2 sm:w-96 bg-white text-gray-900 border border-gray-300 rounded-md shadow-2xl z-50 overflow-hidden">
+                      <div className="px-3.5 py-2.5 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
+                        <div className="font-bold text-xs uppercase tracking-wider text-gray-700">
+                          Sales Edit Alerts ({unreadNotifCount} Unread)
+                        </div>
+                        {unreadNotifCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleMarkAllNotificationsRead}
+                            className="text-xs font-semibold text-amber-800 hover:underline"
+                          >
+                            Mark all as read
+                          </button>
+                        )}
+                      </div>
+                      <div className="max-h-80 overflow-y-auto divide-y divide-gray-200">
+                        {mergedAdminNotifications.length === 0 ? (
+                          <div className="p-5 text-center text-xs text-gray-500">
+                            No sales order edits reported yet.
+                          </div>
+                        ) : (
+                          mergedAdminNotifications.slice(0, 25).map((n) => (
+                            <button
+                              key={n.id}
+                              type="button"
+                              onClick={() => {
+                                handleMarkNotificationRead(n);
+                                setNotifDropdownOpen(false);
+                                const targetOrd = db.orders.find((o) => o.id === n.order_id || o.order_no === n.order_number);
+                                if (targetOrd) {
+                                  setEditingOrder(targetOrd);
+                                  setActiveNav('new_order');
+                                }
+                              }}
+                              className={`w-full text-left px-3.5 py-2.5 hover:bg-gray-50 flex items-start gap-2.5 ${
+                                !n.is_read ? 'bg-amber-50/70' : 'bg-white'
+                              }`}
+                            >
+                              <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${!n.is_read ? 'bg-red-600' : 'bg-gray-300'}`} />
+                              <div className="min-w-0 flex-1">
+                                <div className="text-xs font-semibold text-gray-900 break-words">{n.summary}</div>
+                                <div className="text-[11px] text-gray-500 mt-0.5">{formatDateTimeDDMMYYYY(n.created_at)}</div>
+                              </div>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Mobile Search Icon Button Only */}
               <button
                 type="button"
@@ -4263,9 +4609,10 @@
                           onChange={(e) => setQueueFilter(e.target.value)}
                         >
                           <option value="ALL">All Orders ({activeOrders.length})</option>
-                          <option value="READY_DELIVERY">Ready for Delivery ({readyForDeliveryCount})</option>
+                          <option value="PENDING">Pending Orders ({pendingOrdersCount})</option>
+                          <option value="READY_DELIVERY">Ready to Deliver ({readyForDeliveryCount})</option>
                           <option value="BALANCE_DUE">Balance Due ({balanceDueCount})</option>
-                          <option value="UNCONFIRMED">Unconfirmed Estimates ({unconfirmedCount})</option>
+                          <option value="UNCONFIRMED">Unconfirmed ({unconfirmedCount})</option>
                           <option value="STUCK">Stuck in Stage ({stuckOrdersList.length})</option>
                         </select>
                       )}
@@ -4393,7 +4740,7 @@
                                   Mark Ready
                                 </button>
                               )}
-                              {o.status === 'Ready' && (
+                              {isAdmin && o.status === 'Ready' && (
                                 <button
                                   type="button"
                                   onClick={() => handleStatusChange(o, 'Delivered')}
@@ -4557,7 +4904,7 @@
                                         Mark Ready
                                       </button>
                                     )}
-                                    {o.status === 'Ready' && (
+                                    {isAdmin && o.status === 'Ready' && (
                                       <button
                                         onClick={() => handleStatusChange(o, 'Delivered')}
                                         className="px-2 py-1 bg-gray-900 hover:bg-gray-800 text-white rounded text-xs font-semibold"
@@ -5138,6 +5485,7 @@
         else if (k === 'activityLogs') merged.activityLogs = byId('activityLogs', (l) => l.id, 'created_at');
         else if (k === 'pieceLogs') merged.pieceLogs = byId('pieceLogs', (l) => l.id, 'logged_at');
         else if (k === 'notes') merged.notes = byId('notes', (n) => n.id, 'created_at');
+        else if (k === 'admin_notifications') merged.admin_notifications = byId('admin_notifications', (n) => n.id, 'created_at');
         else if (k === 'deletedOrderIds') merged.deletedOrderIds = Array.from(new Set([...(cloud.deletedOrderIds || []), ...(local.deletedOrderIds || [])]));
         else if (k === 'devices') merged.devices = byId('devices', (d) => d.fp, null);
         else if (k === 'nextOrderSeq') merged.nextOrderSeq = Math.max(Number(local.nextOrderSeq) || 1, Number(cloud.nextOrderSeq) || 1);

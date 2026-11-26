@@ -299,6 +299,25 @@
     // ---- ORDER LINES START (Sofa Cover, Cushion/Pillow Cover, Fabric Only — Inches / Pcs / Meter + Sample + Making) ----
     function newId() { return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'L' + Date.now() + Math.random().toString(36).slice(2, 7); }
     function isCushionPart(part) { return part === 'Cushion Cover' || part === 'Pillow Cover'; }
+    function getLineRoute(l) {
+      if (l?.route === 'whatsapp') return 'whatsapp';
+      if (l?.route === 'cotton_dari') return 'cotton_dari';
+      return 'cutting';
+    }
+    function lineRouteLabel(route) {
+      if (route === 'whatsapp') return 'WhatsApp';
+      if (route === 'cotton_dari') return 'Cotton Dari';
+      return 'Cutting';
+    }
+    function hasPendingWhatsAppLines(order) {
+      if (!order || order.is_archived || order.is_trashed) return false;
+      if (['Measurement Pending', 'Estimate Given', 'Awaiting Measurement', 'Delivered', 'Cancelled'].includes(order.status)) return false;
+      return getOrderLines(order).some((l) => getLineRoute(l) === 'whatsapp' && !l.whatsapp_received);
+    }
+    function hasCuttingLines(order) {
+      if (!order) return false;
+      return getOrderLines(order).some((l) => getLineRoute(l) === 'cutting');
+    }
     function newLine(part, unitOverride) {
       const p = part || 'Seating';
       const defaultUnit = unitOverride || (isCushionPart(p) || p === 'Fabric' ? 'Meter' : 'Inches');
@@ -311,6 +330,8 @@
         rate: '',
         making_charge: '',
         pending: false,
+        route: 'cutting',
+        whatsapp_received: false,
         size_l: '',
         size_w: '',
         size_unit: 'in',
@@ -451,6 +472,8 @@
         making_charge: making,
         baseAmount,
         pending: !!line.pending,
+        route: getLineRoute(line),
+        whatsapp_received: !!line.whatsapp_received,
         size_l: String(line.size_l || '').trim(),
         size_w: String(line.size_w || '').trim(),
         size_unit: line.size_unit || 'in',
@@ -515,6 +538,7 @@
       return {
         id: l.id, part: l.part, other_name: l.other_name, design: l.design, unit: l.unit, rate: l.rate,
         making_charge: l.making_charge || 0, pending: l.pending,
+        route: getLineRoute(l), whatsapp_received: !!l.whatsapp_received,
         size_l: l.size_l || '', size_w: l.size_w || '', size_unit: l.size_unit || 'in',
         thickness: l.thickness || '', covers_count: l.covers_count || '', fabric_meters: l.fabric_meters || '',
         as_per_sample: !!l.as_per_sample, sample_note: l.sample_note || '', sample_photo: l.sample_photo || '',
@@ -538,6 +562,7 @@
         id: newId(), part: l.part || 'Seating', other_name: l.other_name || '', design: l.design || '',
         unit: l.unit === 'Pcs' ? 'Pcs' : l.unit === 'Meter' ? 'Meter' : 'Inches',
         rate: l.rate || '', making_charge: l.making_charge || '', pending: !!l.pending,
+        route: getLineRoute(l), whatsapp_received: !!l.whatsapp_received,
         size_l: l.size_l || '', size_w: l.size_w || '', size_unit: l.size_unit || 'in',
         thickness: l.thickness || '', covers_count: l.covers_count || '', fabric_meters: l.fabric_meters || '',
         as_per_sample: !!l.as_per_sample, sample_note: l.sample_note || '', sample_photo: l.sample_photo || '',
@@ -705,7 +730,10 @@
     function StatusChip({ status }) {
       const map = {
         'Measurement Pending': 'bg-gray-100 text-gray-700 border-gray-300',
+        'Awaiting Measurement': 'bg-red-50 text-red-800 border-red-300',
         'Estimate Given': 'bg-gray-100 text-gray-800 border-gray-400',
+        'WhatsApp Pending': 'bg-purple-50 text-purple-800 border-purple-300',
+        'Cotton Dari': 'bg-stone-100 text-stone-800 border-stone-400',
         'Cutting Pending': 'bg-amber-50 text-amber-800 border-amber-300',
         'With Tailor': 'bg-blue-50 text-blue-800 border-blue-300',
         'Silai Done': 'bg-teal-50 text-teal-800 border-teal-300',
@@ -714,8 +742,8 @@
       };
       const cls = map[status] || 'bg-gray-100 text-gray-700 border-gray-300';
       return (
-        <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-semibold border leading-tight text-center ${cls}`}>
-          {status}
+        <span className={`inline-flex items-center px-2.5 py-0.5 rounded text-xs font-semibold border whitespace-nowrap ${cls}`}>
+          {status === 'Awaiting Measurement' ? 'Measurement Pending' : status}
         </span>
       );
     }
@@ -1758,7 +1786,7 @@
     // (Stacks cleanly in 1 column on mobile < 768px, 3-col split on desktop)
     // =========================================================================
     function OrderEntryScreen({ existingOrder, allOrders, salesmen, currentRole, orderNotes = [], onCancel, onCommitOrder }) {
-      const isConfirmed = existingOrder && !['Measurement Pending', 'Estimate Given'].includes(existingOrder.status);
+      const isConfirmed = existingOrder && !['Measurement Pending', 'Estimate Given', 'Awaiting Measurement'].includes(existingOrder.status);
       const canEditSpecs = !isConfirmed || ['admin', 'sales'].includes(currentRole);
 
       const draftKey = existingOrder ? `sg_draft_${existingOrder.id}` : 'sg_draft_new_order';
@@ -1847,6 +1875,7 @@
       };
 
       const calc = calcOrderLines(form);
+      const visitMode = form.measurement_source === 'Shop visit'; // home/shop visit: details come later, so fields are optional
 
       const setLines = (fn) => setForm((f) => ({ ...f, lines: fn(f.lines) }));
       const updateLine = (li, patch) => setLines((ls) => ls.map((l, i) => (i === li ? { ...l, ...patch } : l)));
@@ -1893,29 +1922,43 @@
 
       const validateAndOpenReview = () => {
         setErrorMsg('');
-        if (!form.customer_name.trim() || form.mobile.length < 10 || !calc.lines.some((l) => l.design)) {
-          setErrorMsg('Please enter Customer Name, 10-digit Mobile Number, and at least one Design Name.');
+        if (!form.customer_name.trim() || form.mobile.length < 10) {
+          setErrorMsg('Please enter Customer Name and 10-digit Mobile Number.');
           return;
         }
-        const noDesign = calc.lines.findIndex((l) => l.raw > 0 && !l.design);
-        if (noDesign > -1) {
-          setErrorMsg(`Line ${noDesign + 1} (${calc.lines[noDesign].name}): Design Name is missing.`);
-          return;
-        }
-        if (!calc.hasMeasure || !form.salesman_name || !form.promised_date || !form.total_pcs) {
-          setErrorMsg('To confirm an order, Measurements, Salesman, Promised Date, and Total Pieces are required.');
-          return;
+        if (!visitMode) {
+          if (!calc.lines.some((l) => l.design)) {
+            setErrorMsg('Please enter at least one Design Name.');
+            return;
+          }
+          const noDesign = calc.lines.findIndex((l) => l.raw > 0 && !l.design);
+          if (noDesign > -1) {
+            setErrorMsg(`Line ${noDesign + 1} (${calc.lines[noDesign].name}): Design Name is missing.`);
+            return;
+          }
+          if (!calc.hasMeasure || !form.salesman_name || !form.promised_date || !form.total_pcs) {
+            setErrorMsg('To confirm an order, Measurements, Salesman, Promised Date, and Total Pieces are required.');
+            return;
+          }
         }
         setReviewMode(true);
       };
 
       const finalizeSave = (targetStatus, afterAction = 'none') => {
         setErrorMsg('');
-        if (!form.customer_name.trim() || !form.mobile.trim() || !calc.lines.some((l) => l.design)) {
-          setErrorMsg('Customer Name, Mobile Number, and at least one Design Name are required.');
+        if (!form.customer_name.trim() || !form.mobile.trim() || (!visitMode && !calc.lines.some((l) => l.design))) {
+          setErrorMsg(visitMode ? 'Customer Name and Mobile Number are required.' : 'Customer Name, Mobile Number, and at least one Design Name are required.');
           return;
         }
-        const nextStatus = targetStatus === 'Confirmed' ? 'Cutting Pending' : targetStatus;
+        // Confirmed order with NO measurements yet (e.g. home visit): keep it as "Awaiting Measurement" (shown as Measurement Pending), do not send to Cutting.
+        const stillPending = !calc.hasMeasure && (targetStatus === 'Confirmed' || existingOrder?.status === 'Awaiting Measurement');
+        const hasCutRoute = calc.lines.some((l) => getLineRoute(l) === 'cutting');
+        const hasWaRoute = calc.lines.some((l) => getLineRoute(l) === 'whatsapp' && !l.whatsapp_received);
+        const confirmedRouteStatus = hasCutRoute ? 'Cutting Pending' : hasWaRoute ? 'WhatsApp Pending' : 'Cotton Dari';
+        let nextStatus = targetStatus === 'Confirmed' ? confirmedRouteStatus : targetStatus;
+        if (stillPending) nextStatus = 'Awaiting Measurement';
+        else if (existingOrder?.status === 'Awaiting Measurement') nextStatus = confirmedRouteStatus;
+
         const { important_note, important_note_priority, ...cleanForm } = form;
         const payload = {
           ...cleanForm,
@@ -1932,13 +1975,14 @@
           balance_amount: calc.balance,
           total_pcs: parseInt(form.total_pcs) || 1,
           visit_charge: parseFloat(form.visit_charge) || 0,
+          measurement_pending: stillPending,
           status: nextStatus
         };
         if (!existingOrder) localStorage.removeItem(draftKey);
-        onCommitOrder(payload, targetStatus === 'Confirmed', afterAction, {
+        onCommitOrder(payload, targetStatus === 'Confirmed', stillPending ? 'none' : afterAction, {
           manualNote: important_note && important_note.trim() ? { text: important_note.trim(), priority: important_note_priority || 'Normal' } : null,
           advanceZeroOnConfirm: targetStatus === 'Confirmed' && (parseFloat(form.advance_amount) || 0) === 0,
-          hasPendingLine: calc.hasPendingLine
+          hasPendingLine: calc.hasPendingLine || stillPending
         });
       };
 
@@ -2186,6 +2230,12 @@
                     />
                   </div>
                 </div>
+
+                {visitMode && (
+                  <div className="text-xs font-semibold text-blue-900 bg-blue-50 border border-blue-200 rounded px-3 py-2">
+                    Visit order: design, measurements, rate, salesman, promised date and pieces are optional for now. You can confirm the order; it will show "Measurement Pending" and will not go to Cutting until measurements are added.
+                  </div>
+                )}
 
                 {form.lines.map((line, li) => {
                   const lc = calc.lines[li];
@@ -2465,6 +2515,41 @@
                         )}
                       </div>
 
+                      {/* 3 Tick-Mark Route Selector: 1. Cutting, 2. WhatsApp, 3. Cotton Dari */}
+                      <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-gray-200">
+                        <span className="text-[11px] font-bold uppercase text-gray-500">Send Line To:</span>
+                        {[
+                          { id: 'cutting', label: '1. Cutting', activeCls: 'bg-amber-700 text-white border-amber-700' },
+                          { id: 'whatsapp', label: '2. WhatsApp', activeCls: 'bg-purple-700 text-white border-purple-700' },
+                          { id: 'cotton_dari', label: '3. Cotton Dari', activeCls: 'bg-stone-700 text-white border-stone-700' }
+                        ].map((opt) => {
+                          const checked = getLineRoute(line) === opt.id;
+                          return (
+                            <label
+                              key={opt.id}
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-bold cursor-pointer select-none min-h-[40px] md:min-h-0 ${
+                                checked ? opt.activeCls : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                disabled={!canEditSpecs}
+                                checked={checked}
+                                onChange={() => updateLine(li, { route: opt.id, whatsapp_received: opt.id === 'whatsapp' ? false : !!line.whatsapp_received })}
+                                className="w-4 h-4 accent-current"
+                              />
+                              <span>{opt.label}</span>
+                            </label>
+                          );
+                        })}
+                        {getLineRoute(line) === 'cotton_dari' && (
+                          <span className="text-[11px] text-stone-600 font-medium">(Neither Cutting nor WhatsApp)</span>
+                        )}
+                        {getLineRoute(line) === 'whatsapp' && (
+                          <span className="text-[11px] text-purple-700 font-medium">(Goes to WhatsApp section, not Cutting)</span>
+                        )}
+                      </div>
+
                       <div className="text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2 tabular-nums">
                         {lc ? lc.text : ''}
                       </div>
@@ -2651,7 +2736,7 @@
                     onClick={() => finalizeSave(existingOrder.status, 'none')}
                     className="w-full bg-gray-900 hover:bg-gray-800 text-white py-3 rounded font-bold text-sm min-h-[44px]"
                   >
-                    Save Order Changes
+                    {existingOrder.status === 'Awaiting Measurement' ? 'Save Measurements' : 'Save Order Changes'}
                   </button>
                 )}
               </div>
@@ -2672,6 +2757,11 @@
                 <div className="bg-gray-50 border border-gray-200 rounded p-4 space-y-2 text-sm">
                   <div className="flex justify-between gap-2"><span className="text-gray-600">Order Type:</span><strong className="text-right">{form.order_type || 'Sofa Cover'}</strong></div>
                   <div className="flex justify-between gap-2"><span className="text-gray-600">Customer:</span><strong className="text-right">{form.customer_name} ({form.mobile})</strong></div>
+                  {!calc.hasMeasure && (
+                    <div className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+                      Measurement pending: the order will be confirmed, but will NOT go to Cutting until measurements are added.
+                    </div>
+                  )}
                   <div className="flex justify-between gap-2"><span className="text-gray-600">Pieces:</span><strong className="text-right">{form.total_pcs} Pcs</strong></div>
                   {calc.lines.filter((l) => l.raw > 0 || l.design || l.making_charge > 0).map((l) => (
                     <div key={l.id} className="flex justify-between gap-2">
@@ -2751,17 +2841,190 @@
     }
 
     // =========================================================================
+    // WHATSAPP FABRIC ORDERS WORKFLOW (Admin, Counter Sales & Cutting Master)
+    // =========================================================================
+    function WhatsAppOrdersPanel({ db, saveDb, currentRole, onOpenOrder, onNotify }) {
+      const [tailorPick, setTailorPick] = useState({});
+
+      const whatsappOrders = useMemo(() => {
+        return (db.orders || [])
+          .filter((o) => hasPendingWhatsAppLines(o))
+          .sort((a, b) => (a.promised_date || '9999-12-31').localeCompare(b.promised_date || '9999-12-31'));
+      }, [db.orders]);
+
+      const handleReceiveAndSendToCutting = (order) => {
+        if (!confirm(`Confirm fabric received for ${order.order_no} and send to Cutting Master?`)) return;
+        const nowIso = new Date().toISOString();
+        const nextOrders = db.orders.map((o) => {
+          if (o.id !== order.id) return o;
+          const updatedLines = getOrderLines(o).map((l) =>
+            getLineRoute(l) === 'whatsapp' && !l.whatsapp_received
+              ? { ...l, route: 'cutting', whatsapp_received: true }
+              : l
+          );
+          const nextStatus = ['WhatsApp Pending', 'Cotton Dari'].includes(o.status) ? 'Cutting Pending' : o.status;
+          return { ...o, lines: updatedLines, status: nextStatus, stage_changed_at: nowIso, updated_at: nowIso };
+        });
+        const nextActivity = [
+          { id: crypto.randomUUID(), order_no: order.order_no, action: 'WhatsApp fabric received -> Sent to Cutting', role: currentRole, created_at: nowIso },
+          ...db.activityLogs
+        ];
+        saveDb({ ...db, orders: nextOrders, activityLogs: nextActivity });
+        if (onNotify) onNotify(`${order.order_no}: Fabric received -> Sent to Cutting`);
+      };
+
+      const handleReceiveAndSendToTailor = (order) => {
+        const tailor = tailorPick[order.id];
+        if (!tailor) return alert('Select Tailor 1 or Tailor 2 first.');
+        const tailorLabel = tailor === 'tailor_1' ? 'Tailor 1' : 'Tailor 2';
+        if (!confirm(`Confirm fabric received for ${order.order_no} and send directly to ${tailorLabel}?`)) return;
+        const nowIso = new Date().toISOString();
+        const nextOrders = db.orders.map((o) => {
+          if (o.id !== order.id) return o;
+          const updatedLines = getOrderLines(o).map((l) =>
+            getLineRoute(l) === 'whatsapp' && !l.whatsapp_received
+              ? { ...l, whatsapp_received: true }
+              : l
+          );
+          return { ...o, lines: updatedLines, status: 'With Tailor', assigned_tailor: tailor, stage_changed_at: nowIso, updated_at: nowIso };
+        });
+        const nextActivity = [
+          { id: crypto.randomUUID(), order_no: order.order_no, action: `WhatsApp fabric received -> Sent directly to ${tailorLabel}`, role: currentRole, created_at: nowIso },
+          ...db.activityLogs
+        ];
+        saveDb({ ...db, orders: nextOrders, activityLogs: nextActivity });
+        if (onNotify) onNotify(`${order.order_no}: Fabric received -> Sent to ${tailorLabel}`);
+      };
+
+      return (
+        <div className="space-y-4">
+          <div className="bg-purple-50 border border-purple-200 rounded p-3.5 flex flex-wrap justify-between items-center gap-2">
+            <div>
+              <h2 className="font-bold text-base text-purple-950 flex items-center gap-2">
+                <Icon name="MessageCircle" size={18} /> WhatsApp Fabric Orders ({whatsappOrders.length})
+              </h2>
+              <p className="text-xs text-purple-800 mt-0.5">
+                Out-of-stock designs ordered via WhatsApp. Once fabric arrives, mark Fabric Received to send to Cutting or directly to Tailor.
+              </p>
+            </div>
+          </div>
+
+          {whatsappOrders.length === 0 ? (
+            <div className="bg-white border border-gray-300 rounded p-10 text-center space-y-1">
+              <div className="font-bold text-gray-800">No pending WhatsApp fabric orders</div>
+              <p className="text-xs text-gray-500">Orders with lines ticked as "2. WhatsApp" will appear here.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {whatsappOrders.map((order) => {
+                const waLines = getOrderLines(order).filter((l) => getLineRoute(l) === 'whatsapp' && !l.whatsapp_received);
+                const urgency = getDueUrgency(order.promised_date, order.status);
+                return (
+                  <div key={order.id} className="bg-white border-2 border-purple-300 rounded p-4 space-y-3 shadow-sm">
+                    <div className="flex justify-between items-start border-b border-gray-200 pb-2.5 gap-2">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-bold text-lg text-gray-900">{order.order_no}</span>
+                          <StatusChip status={order.status} />
+                          {urgency && (
+                            <span className={`px-2 py-0.5 rounded text-xs font-bold ${urgency.level === 'overdue' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-900'}`}>
+                              {urgency.label}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-sm font-semibold text-gray-800 mt-0.5">{order.customer_name} • {order.mobile}</div>
+                      </div>
+                      <div className="text-right tabular-nums shrink-0">
+                        <div className="text-[11px] font-semibold text-gray-500 uppercase">Delivery Due</div>
+                        <div className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(order.promised_date)}</div>
+                        <div className="text-xs font-bold text-purple-800">{order.total_pcs} PCS</div>
+                      </div>
+                    </div>
+
+                    <div className="bg-purple-50/60 border border-purple-200 rounded p-3 space-y-1.5 text-sm">
+                      <div className="text-[11px] font-bold uppercase text-purple-900">WhatsApp Fabric Lines ({waLines.length})</div>
+                      {waLines.map((l, i) => (
+                        <div key={i} className="text-gray-900">
+                          <strong className="text-purple-900">{linePartName(l)}:</strong>{' '}
+                          <span className="font-semibold">{l.design || order.design_name || '—'}</span> —{' '}
+                          <span>{lineRowsText(l)} ({Number(l.qty) || 0} {l.unit === 'Pcs' ? 'pcs' : l.unit === 'Meter' ? 'mtr' : 'ft'})</span>
+                        </div>
+                      ))}
+                      {order.tailor_notes && (
+                        <div className="pt-1.5 border-t border-purple-200 text-xs text-gray-800">
+                          <strong>Notes:</strong> {order.tailor_notes}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleReceiveAndSendToCutting(order)}
+                        className="w-full bg-amber-700 hover:bg-amber-800 text-white py-2.5 px-3 rounded font-bold text-xs inline-flex items-center justify-center gap-1.5 min-h-[44px]"
+                      >
+                        <Icon name="Scissors" size={15} /> Fabric Received → Send to Cutting
+                      </button>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        {['tailor_1', 'tailor_2'].map((tKey) => (
+                          <button
+                            key={tKey}
+                            type="button"
+                            onClick={() => setTailorPick({ ...tailorPick, [order.id]: tKey })}
+                            className={`flex-1 py-2 rounded border font-bold text-xs min-h-[42px] ${
+                              tailorPick[order.id] === tKey ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-800 border-gray-300'
+                            }`}
+                          >
+                            {tKey === 'tailor_1' ? 'Tailor 1' : 'Tailor 2'}
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => handleReceiveAndSendToTailor(order)}
+                          className="flex-1 bg-emerald-700 hover:bg-emerald-800 text-white py-2 px-3 rounded font-bold text-xs min-h-[42px]"
+                        >
+                          Send to Tailor
+                        </button>
+                      </div>
+
+                      {onOpenOrder && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenOrder(order)}
+                          className="w-full border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 py-2 rounded text-xs font-semibold min-h-[40px]"
+                        >
+                          Open Full Order Details
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // =========================================================================
     // MOBILE-FIRST CUTTING & TAILOR WORK QUEUES (Large Touch Targets, 1 Task/Screen)
     // =========================================================================
     function ShopFloorMobileView({ db, saveDb, currentRole, scannedOrderNo }) {
       const [selectedTailor, setSelectedTailor] = useState({});
       const [undoState, setUndoState] = useState(null);
       const [viewingSketch, setViewingSketch] = useState(null);
+      const [cuttingTab, setCuttingTab] = useState('cut'); // cut | whatsapp
+
+      const whatsappCount = useMemo(
+        () => (db.orders || []).filter((o) => hasPendingWhatsAppLines(o)).length,
+        [db.orders]
+      );
 
       const queueOrders = useMemo(() => {
         const list = db.orders.filter((o) => {
           if (o.is_archived || o.is_trashed) return false;
-          if (currentRole === 'cutting') return o.status === 'Cutting Pending';
+          if (currentRole === 'cutting') return o.status === 'Cutting Pending' && hasCuttingLines(o);
           if (currentRole === 'tailor_1' || currentRole === 'tailor_2') {
             return o.status === 'With Tailor' && o.assigned_tailor === currentRole;
           }
@@ -2859,6 +3122,29 @@
             </div>
           )}
 
+          {currentRole === 'cutting' && (
+            <div className="grid grid-cols-2 gap-2 bg-white p-1.5 rounded border border-gray-300">
+              <button
+                type="button"
+                onClick={() => setCuttingTab('cut')}
+                className={`py-2.5 rounded font-bold text-sm min-h-[44px] ${cuttingTab === 'cut' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'}`}
+              >
+                To Cut ({queueOrders.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setCuttingTab('whatsapp')}
+                className={`py-2.5 rounded font-bold text-sm min-h-[44px] ${cuttingTab === 'whatsapp' ? 'bg-purple-700 text-white' : 'text-purple-900 bg-purple-50 hover:bg-purple-100'}`}
+              >
+                WhatsApp ({whatsappCount})
+              </button>
+            </div>
+          )}
+
+          {currentRole === 'cutting' && cuttingTab === 'whatsapp' ? (
+            <WhatsAppOrdersPanel db={db} saveDb={saveDb} currentRole={currentRole} />
+          ) : (
+            <>
           <div className="flex justify-between items-center px-1">
             <h2 className="font-bold text-base text-gray-900">
               {currentRole === 'cutting' ? `To Cut (${queueOrders.length})` : `To Stitch (${queueOrders.length})`}
@@ -2907,7 +3193,9 @@
                     {order.order_type && order.order_type !== 'Sofa Cover' && (
                       <div className="text-xs font-bold uppercase text-amber-900">Type: {order.order_type}</div>
                     )}
-                    {getOrderLines(order).map((l, i) => (
+                    {getOrderLines(order)
+                      .filter((l) => currentRole !== 'cutting' || getLineRoute(l) === 'cutting')
+                      .map((l, i) => (
                       <div key={i} className="space-y-1">
                         <div>
                           <span className="text-gray-500 font-semibold">{linePartName(l)}:</span> <strong>{lineRowsText(l)}</strong> ({Number(l.qty) || 0} {l.unit === 'Pcs' ? 'pcs' : l.unit === 'Meter' ? 'mtr' : 'ft'})
@@ -2976,6 +3264,8 @@
                 </div>
               );
             })
+          )}
+            </>
           )}
           {viewingSketch && <SketchViewerModal sketch={viewingSketch} onClose={() => setViewingSketch(null)} />}
         </div>
@@ -3054,7 +3344,7 @@
         { id: 'dues', label: '8. Customer Dues' }
       ];
 
-      const pendingStages = ['Measurement Pending', 'Estimate Given', 'Cutting Pending', 'With Tailor', 'Silai Done', 'Ready'];
+      const pendingStages = ['Measurement Pending', 'Awaiting Measurement', 'Estimate Given', 'Cutting Pending', 'With Tailor', 'Silai Done', 'Ready'];
       const maxStageCount = Math.max(1, ...pendingStages.map((st) => activeOrders.filter((o) => o.status === st).length));
 
       return (
@@ -4199,6 +4489,8 @@
         return limit && getHoursInStage(o) > limit;
       });
       const unconfirmedCount = activeOrders.filter((o) => ['Measurement Pending', 'Estimate Given'].includes(o.status)).length;
+      const awaitMeasureCount = activeOrders.filter((o) => o.status === 'Awaiting Measurement').length;
+      const whatsappQueueCount = activeOrders.filter((o) => hasPendingWhatsAppLines(o)).length;
 
       const orderNoNum = (o) => parseInt(String(o.order_no || '').replace(/\D/g, ''), 10) || 0;
 
@@ -4217,6 +4509,7 @@
               const limit = db.settings?.stageAlertHours?.[o.status];
               return limit && getHoursInStage(o) > limit;
             }
+            if (queueFilter === 'AWAIT_MEASURE') return o.status === 'Awaiting Measurement';
             if (queueFilter === 'UNCONFIRMED') return ['Measurement Pending', 'Estimate Given'].includes(o.status);
           }
           return true;
@@ -4370,6 +4663,21 @@
                 </button>
               </div>
             )}
+
+            {/* WhatsApp Fabric Order Section (At the last of Counter Sales & Admin sidebar) */}
+            <div className="pt-3 mt-3 border-t border-gray-200">
+              <button
+                onClick={() => selectPage('whatsapp_orders')}
+                className={`w-full text-left px-3 py-2.5 rounded text-sm font-bold flex justify-between items-center min-h-[44px] md:min-h-0 ${
+                  activeNav === 'whatsapp_orders' ? 'bg-purple-700 text-white' : 'bg-purple-50 text-purple-900 hover:bg-purple-100'
+                }`}
+              >
+                <span className="inline-flex items-center gap-2.5"><Icon name="MessageCircle" size={16} /> WhatsApp</span>
+                <span className={`text-xs font-bold px-1.5 py-0.5 rounded tabular-nums ${activeNav === 'whatsapp_orders' ? 'bg-purple-900 text-white' : 'bg-purple-200 text-purple-950'}`}>
+                  {whatsappQueueCount}
+                </span>
+              </button>
+            </div>
           </div>
 
           <div className="pt-3 border-t border-gray-200 space-y-2">
@@ -4612,6 +4920,7 @@
                           <option value="PENDING">Pending Orders ({pendingOrdersCount})</option>
                           <option value="READY_DELIVERY">Ready to Deliver ({readyForDeliveryCount})</option>
                           <option value="BALANCE_DUE">Balance Due ({balanceDueCount})</option>
+                          <option value="AWAIT_MEASURE">Measurement Pending - Confirmed ({awaitMeasureCount})</option>
                           <option value="UNCONFIRMED">Unconfirmed ({unconfirmedCount})</option>
                           <option value="STUCK">Stuck in Stage ({stuckOrdersList.length})</option>
                         </select>
@@ -4731,7 +5040,7 @@
                               >
                                 <Icon name="History" size={15} /> History
                               </button>
-                              {o.status === 'Silai Done' && (
+                              {['Silai Done', 'Cotton Dari'].includes(o.status) && (
                                 <button
                                   type="button"
                                   onClick={() => handleStatusChange(o, 'Ready')}
@@ -4896,7 +5205,7 @@
                                     >
                                       <Icon name="History" size={14} />
                                     </button>
-                                    {o.status === 'Silai Done' && (
+                                    {['Silai Done', 'Cotton Dari'].includes(o.status) && (
                                       <button
                                         onClick={() => handleStatusChange(o, 'Ready')}
                                         className="px-2 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-xs font-semibold"
@@ -4975,6 +5284,15 @@
                   </div>
                 </div>
                 </>
+              )}
+
+              {activeNav === 'whatsapp_orders' && (
+                <WhatsAppOrdersPanel
+                  db={db}
+                  saveDb={saveDb}
+                  currentRole={currentRole}
+                  onOpenOrder={(ord) => { setEditingOrder(ord); setActiveNav('new_order'); }}
+                />
               )}
 
               {isAdmin && activeNav === 'reports' && (
@@ -5537,7 +5855,8 @@
       const [currentRole, setCurrentRole] = useState(() => sessionStorage.getItem('sg_active_role') || null);
       const [serverAuthMode, setServerAuthMode] = useState(false);
       const [serverDeviceStatus, setServerDeviceStatus] = useState(() => sessionStorage.getItem('sg_device_status') || null); // 'approved' | 'pending' | 'rejected' | null
-      const [selectedRole, setSelectedRole] = useState(ROLES[0].role);
+      const [lockedDeviceRole, setLockedDeviceRole] = useState(() => localStorage.getItem('sg_locked_device_role') || null);
+      const [selectedRole, setSelectedRole] = useState(() => localStorage.getItem('sg_locked_device_role') || ROLES[0].role);
       const [pin, setPin] = useState('');
       const [loginBusy, setLoginBusy] = useState(false);
       const [installPrompt, setInstallPrompt] = useState(null);
@@ -5602,8 +5921,41 @@
         });
         setSupabaseClient(client);
 
-        // Only download db.json if device is already approved (or before RLS SQL is installed)
+        // Check server-side device status + locked role BEFORE loading any data
         (async () => {
+          const { data: devInfo, error: infoErr } = await client.rpc('get_my_device_info');
+          if (!infoErr && devInfo && typeof devInfo.registered === 'boolean') {
+            setServerAuthMode(true);
+            if (devInfo.registered && devInfo.role) {
+              setLockedDeviceRole(devInfo.role);
+              setSelectedRole(devInfo.role);
+              localStorage.setItem('sg_locked_device_role', devInfo.role);
+              // Prevent sessionStorage tampering: if active session role != locked device role, force logout
+              const activeSes = sessionStorage.getItem('sg_active_role');
+              if (activeSes && activeSes !== devInfo.role) {
+                sessionStorage.removeItem('sg_active_role');
+                setCurrentRole(null);
+              }
+            } else {
+              setLockedDeviceRole(null);
+              localStorage.removeItem('sg_locked_device_role');
+            }
+            if (devInfo.status === 'approved') {
+              setServerDeviceStatus('approved');
+              sessionStorage.setItem('sg_device_status', 'approved');
+              await loadCloudDb(client);
+            } else {
+              localStorage.removeItem('sg_cloud_db_cache');
+              setDb(INITIAL_DB);
+              if (sessionStorage.getItem('sg_active_role')) {
+                setServerDeviceStatus(devInfo.status || 'pending');
+                sessionStorage.setItem('sg_device_status', devInfo.status || 'pending');
+              }
+            }
+            return;
+          }
+
+          // Fallback to older is_device_approved RPC if v13 SQL not run yet
           const { data: approvedFlag, error: rpcErr } = await client.rpc('is_device_approved');
           if (!rpcErr && typeof approvedFlag === 'boolean') {
             setServerAuthMode(true);
@@ -5612,7 +5964,6 @@
               sessionStorage.setItem('sg_device_status', 'approved');
               await loadCloudDb(client);
             } else {
-              // Unapproved device: load ZERO data and purge local cache
               localStorage.removeItem('sg_cloud_db_cache');
               setDb(INITIAL_DB);
               if (sessionStorage.getItem('sg_active_role')) {
@@ -5621,7 +5972,6 @@
               }
             }
           } else {
-            // Fallback only if device_security_rls.sql has not been installed yet
             setServerAuthMode(false);
             await loadCloudDb(client);
           }
@@ -5700,10 +6050,13 @@
                 setLoginBusy(false);
                 return;
               }
+              const effectiveRole = res.role || selectedRole;
+              setLockedDeviceRole(effectiveRole);
+              localStorage.setItem('sg_locked_device_role', effectiveRole);
               setServerDeviceStatus(res.status);
               sessionStorage.setItem('sg_device_status', res.status);
-              sessionStorage.setItem('sg_active_role', selectedRole);
-              setCurrentRole(selectedRole);
+              sessionStorage.setItem('sg_active_role', effectiveRole);
+              setCurrentRole(effectiveRole);
               setPin('');
               if (res.status === 'approved') {
                 await loadCloudDb(supabaseClient);
@@ -5719,22 +6072,27 @@
         }
 
         // Local fallback when server RLS RPC is not installed
+        const existingDev = db.devices.find((d) => d.fp === myFp);
+        if (existingDev && existingDev.role && existingDev.role !== selectedRole) {
+          alert(`This device is locked to ${existingDev.role.toUpperCase()} role only. You cannot sign in as ${selectedRole.toUpperCase()} on this device.`);
+          return;
+        }
         const expectedPin = db.settings?.pins?.[selectedRole] || '8866';
         if (pin !== expectedPin) {
           alert('Incorrect 4-digit PIN.');
           return;
         }
         if (selectedRole === 'admin') {
-          const exists = db.devices.find((d) => d.fp === myFp);
-          if (!exists || exists.status !== 'approved') {
+          if (!existingDev || existingDev.status !== 'approved') {
             saveDb({ ...db, devices: [...db.devices.filter((d) => d.fp !== myFp), { fp: myFp, role: 'admin', status: 'approved', device_name: getDeviceLabel(), requested_at: new Date().toISOString() }] });
           }
         } else {
-          const exists = db.devices.find((d) => d.fp === myFp);
-          if (!exists) {
+          if (!existingDev) {
             saveDb({ ...db, devices: [...db.devices, { fp: myFp, role: selectedRole, status: 'pending', device_name: getDeviceLabel(), requested_at: new Date().toISOString() }] });
           }
         }
+        setLockedDeviceRole(selectedRole);
+        localStorage.setItem('sg_locked_device_role', selectedRole);
         sessionStorage.setItem('sg_active_role', selectedRole);
         setCurrentRole(selectedRole);
         setPin('');
@@ -5787,14 +6145,20 @@
                 <div>
                   <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Department Role</label>
                   <select
-                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-semibold bg-white"
-                    value={selectedRole}
+                    disabled={!!lockedDeviceRole}
+                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-semibold bg-white disabled:bg-gray-100 disabled:text-gray-800"
+                    value={lockedDeviceRole || selectedRole}
                     onChange={(e) => setSelectedRole(e.target.value)}
                   >
                     {ROLES.map((r) => (
                       <option key={r.role} value={r.role}>{r.label}</option>
                     ))}
                   </select>
+                  {lockedDeviceRole && (
+                    <p className="text-[11px] text-amber-800 font-semibold mt-1">
+                      Device locked to: <span className="uppercase">{lockedDeviceRole.replace('_', ' ')}</span> only (Admin must remove device to change role)
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">4-Digit PIN</label>

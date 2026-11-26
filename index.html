@@ -2781,6 +2781,7 @@
                       </div>
                     </div>
                   )}
+                  <div className="flex justify-between gap-2"><span className="text-gray-600">Order Date:</span><strong className="text-right">{formatDateDDMMYYYY(existingOrder?.created_at || new Date())}</strong></div>
                   <div className="flex justify-between gap-2"><span className="text-gray-600">Promised Delivery:</span><strong className="text-right">{formatDateDDMMYYYY(form.promised_date)}</strong></div>
                   <div className="flex justify-between gap-2"><span className="text-gray-600">Salesman:</span><strong className="text-right">{form.salesman_name}</strong></div>
                   <div className="border-t border-gray-300 pt-2 flex flex-wrap justify-between gap-2 text-base tabular-nums">
@@ -2935,7 +2936,8 @@
                         <div className="text-sm font-semibold text-gray-800 mt-0.5">{order.customer_name} • {order.mobile}</div>
                       </div>
                       <div className="text-right tabular-nums shrink-0">
-                        <div className="text-[11px] font-semibold text-gray-500 uppercase">Delivery Due</div>
+                        <div className="text-[11px] text-gray-600">Ordered: <strong className="text-gray-900">{formatDateDDMMYYYY(order.created_at)}</strong></div>
+                        <div className="text-[11px] font-semibold text-gray-500 uppercase mt-0.5">Delivery Due</div>
                         <div className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(order.promised_date)}</div>
                         <div className="text-xs font-bold text-purple-800">{order.total_pcs} PCS</div>
                       </div>
@@ -3183,7 +3185,8 @@
                       <div className="text-base font-semibold text-gray-800 mt-0.5">{order.design_name}</div>
                     </div>
                     <div className="text-right tabular-nums">
-                      <div className="text-xs font-semibold text-gray-500">DELIVERY</div>
+                      <div className="text-[11px] text-gray-600">ORD: <strong className="text-gray-900">{formatDateDDMMYYYY(order.created_at)}</strong></div>
+                      <div className="text-xs font-semibold text-gray-500 mt-0.5">DELIVERY</div>
                       <div className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(order.promised_date)}</div>
                       <div className="text-xs font-bold text-amber-800 mt-0.5">{order.total_pcs} PCS</div>
                     </div>
@@ -5004,7 +5007,9 @@
                             </div>
 
                             <div className="flex flex-wrap justify-between items-center gap-2 pt-1 border-t border-gray-100 tabular-nums">
-                              <div className="text-xs text-gray-600 flex items-center gap-1.5">
+                              <div className="text-xs text-gray-600 flex flex-wrap items-center gap-1.5">
+                                <span>Ordered: <strong className="text-gray-900">{formatDateDDMMYYYY(o.created_at)}</strong></span>
+                                <span>•</span>
                                 <span>Due: <strong className="text-gray-900">{formatDateDDMMYYYY(o.promised_date)}</strong></span>
                                 {urgency && (
                                   <span className={`px-1.5 py-0.5 rounded text-[11px] font-bold ${
@@ -5098,6 +5103,7 @@
                           <th className="p-2.5">Order No</th>
                           <th className="p-2.5">Customer & Mobile</th>
                           <th className="p-2.5">Design & Qty</th>
+                          <th className="p-2.5">Order Date</th>
                           <th className="p-2.5">Delivery Due</th>
                           <th className="p-2.5">Status</th>
                           <th className="p-2.5 text-right">Total</th>
@@ -5108,7 +5114,7 @@
                       <tbody className="divide-y divide-gray-200 text-sm">
                         {filteredOrders.length === 0 ? (
                           <tr>
-                            <td colSpan={9} className="p-10 text-center text-gray-500">
+                            <td colSpan={10} className="p-10 text-center text-gray-500">
                               No orders match the current filter. Click <strong>New Order / Estimate</strong> to add one.
                             </td>
                           </tr>
@@ -5157,6 +5163,9 @@
                                   </div>
                                   {o.archive_reason && activeNav === 'archived' && <div className="text-[11px] text-gray-500 italic">Reason: {o.archive_reason}</div>}
                                   {o.trash_reason && activeNav === 'trash' && <div className="text-[11px] text-red-700 italic">Deleted reason: {o.trash_reason}</div>}
+                                </td>
+                                <td className="p-2.5 whitespace-nowrap text-gray-700 font-medium">
+                                  {formatDateDDMMYYYY(o.created_at)}
                                 </td>
                                 <td className="p-2.5 whitespace-nowrap">
                                   <div className="font-medium text-gray-900">{formatDateDDMMYYYY(o.promised_date)}</div>

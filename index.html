@@ -5935,19 +5935,10 @@
           const { data: devInfo, error: infoErr } = await client.rpc('get_my_device_info');
           if (!infoErr && devInfo && typeof devInfo.registered === 'boolean') {
             setServerAuthMode(true);
+            setLockedDeviceRole(null);
+            localStorage.removeItem('sg_locked_device_role');
             if (devInfo.registered && devInfo.role) {
-              setLockedDeviceRole(devInfo.role);
               setSelectedRole(devInfo.role);
-              localStorage.setItem('sg_locked_device_role', devInfo.role);
-              // Prevent sessionStorage tampering: if active session role != locked device role, force logout
-              const activeSes = sessionStorage.getItem('sg_active_role');
-              if (activeSes && activeSes !== devInfo.role) {
-                sessionStorage.removeItem('sg_active_role');
-                setCurrentRole(null);
-              }
-            } else {
-              setLockedDeviceRole(null);
-              localStorage.removeItem('sg_locked_device_role');
             }
             if (devInfo.status === 'approved') {
               setServerDeviceStatus('approved');
@@ -6060,8 +6051,8 @@
                 return;
               }
               const effectiveRole = res.role || selectedRole;
-              setLockedDeviceRole(effectiveRole);
-              localStorage.setItem('sg_locked_device_role', effectiveRole);
+              setLockedDeviceRole(null);
+              localStorage.removeItem('sg_locked_device_role');
               setServerDeviceStatus(res.status);
               sessionStorage.setItem('sg_device_status', res.status);
               sessionStorage.setItem('sg_active_role', effectiveRole);
@@ -6082,26 +6073,22 @@
 
         // Local fallback when server RLS RPC is not installed
         const existingDev = db.devices.find((d) => d.fp === myFp);
-        if (existingDev && existingDev.role && existingDev.role !== selectedRole) {
-          alert(`This device is locked to ${existingDev.role.toUpperCase()} role only. You cannot sign in as ${selectedRole.toUpperCase()} on this device.`);
-          return;
-        }
         const expectedPin = db.settings?.pins?.[selectedRole] || '8866';
         if (pin !== expectedPin) {
           alert('Incorrect 4-digit PIN.');
           return;
         }
-        if (selectedRole === 'admin') {
-          if (!existingDev || existingDev.status !== 'approved') {
-            saveDb({ ...db, devices: [...db.devices.filter((d) => d.fp !== myFp), { fp: myFp, role: 'admin', status: 'approved', device_name: getDeviceLabel(), requested_at: new Date().toISOString() }] });
-          }
-        } else {
-          if (!existingDev) {
-            saveDb({ ...db, devices: [...db.devices, { fp: myFp, role: selectedRole, status: 'pending', device_name: getDeviceLabel(), requested_at: new Date().toISOString() }] });
-          }
+        if (!existingDev || existingDev.role !== selectedRole) {
+          saveDb({
+            ...db,
+            devices: [
+              ...db.devices.filter((d) => d.fp !== myFp),
+              { fp: myFp, role: selectedRole, status: 'pending', device_name: getDeviceLabel(), requested_at: new Date().toISOString() }
+            ]
+          });
         }
-        setLockedDeviceRole(selectedRole);
-        localStorage.setItem('sg_locked_device_role', selectedRole);
+        setLockedDeviceRole(null);
+        localStorage.removeItem('sg_locked_device_role');
         sessionStorage.setItem('sg_active_role', selectedRole);
         setCurrentRole(selectedRole);
         setPin('');
@@ -6154,20 +6141,14 @@
                 <div>
                   <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">Department Role</label>
                   <select
-                    disabled={!!lockedDeviceRole}
-                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-semibold bg-white disabled:bg-gray-100 disabled:text-gray-800"
-                    value={lockedDeviceRole || selectedRole}
+                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-semibold bg-white"
+                    value={selectedRole}
                     onChange={(e) => setSelectedRole(e.target.value)}
                   >
                     {ROLES.map((r) => (
                       <option key={r.role} value={r.role}>{r.label}</option>
                     ))}
                   </select>
-                  {lockedDeviceRole && (
-                    <p className="text-[11px] text-amber-800 font-semibold mt-1">
-                      Device locked to: <span className="uppercase">{lockedDeviceRole.replace('_', ' ')}</span> only (Admin must remove device to change role)
-                    </p>
-                  )}
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-700 mb-1 mobile-label">4-Digit PIN</label>
@@ -6207,7 +6188,8 @@
               <p className="text-xs text-gray-600 leading-relaxed">
                 Device: <strong>{getDeviceLabel()}</strong><br />
                 Device ID: <strong className="font-mono">{myFp}</strong><br />
-                No shop data is loaded on this device until the Owner (Admin) clicks <strong>Allow</strong> in <strong>Shop Settings & Data</strong>.
+                Requested Role: <strong className="uppercase text-amber-800">{currentRole.replace('_', ' ')}</strong><br />
+                Approval request sent. No shop data is loaded on this device until the Owner (Admin) clicks <strong>Allow</strong> in <strong>Shop Settings & Data</strong>.
               </p>
               {serverAuthMode && (
                 <button
